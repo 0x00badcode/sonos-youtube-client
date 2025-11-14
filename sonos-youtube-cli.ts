@@ -2240,20 +2240,22 @@ async function interactiveCLI(): Promise<void> {
   initStdinReader();
   
   // Helper to update just the prompt line without clearing screen
-  function updatePromptLine(prompt: string, input: string, promptX: number, promptY: number): void {
+  function updatePromptLine(prompt: string, input: string, promptX: number, promptY: number, maxWidth?: number): void {
     moveCursor(promptY, promptX);
     setColor("bright", "green");
-    const displayInput = input.length > (TUI_WIDTH - promptX - prompt.length - 2)
-      ? "..." + input.slice(-(TUI_WIDTH - promptX - prompt.length - 5))
+    const totalWidth = Math.max(0, (maxWidth ?? (TUI_WIDTH - promptX + 1)));
+    const inputRoom = Math.max(0, totalWidth - prompt.length - 1);
+    const displayInput = input.length > inputRoom
+      ? "..." + input.slice(-(Math.max(0, inputRoom - 3)))
       : input;
-    const padding = " ".repeat(Math.max(0, TUI_WIDTH - promptX - prompt.length - displayInput.length));
+    const padding = " ".repeat(Math.max(0, totalWidth - (prompt.length + displayInput.length)));
     Deno.stdout.writeSync(new TextEncoder().encode(prompt + displayInput + padding));
     resetColor();
     // Move cursor to end of input
     moveCursor(promptY, promptX + prompt.length + displayInput.length);
   }
 
-  async function readLine(prompt: string = "sonos> ", promptX: number = 1, promptY: number = 23): Promise<string | null> {
+  async function readLine(prompt: string = "sonos> ", promptX: number = 1, promptY: number = 23, lineWidth?: number): Promise<string | null> {
     // Ensure reader is initialized
     if (!stdinReader) {
       initStdinReader();
@@ -2261,10 +2263,11 @@ async function interactiveCLI(): Promise<void> {
     
     // Reset buffer for new line
     inputBuffer = "";
+    activePrompt = { prompt, x: promptX, y: promptY, width: lineWidth, input: "" };
     
     // Show initial prompt
     if (tuiEnabled) {
-      updatePromptLine(prompt, "", promptX, promptY);
+      updatePromptLine(prompt, "", promptX, promptY, lineWidth);
     }
     
     try {
@@ -2302,8 +2305,9 @@ async function interactiveCLI(): Promise<void> {
           if (byte === 0x7F || byte === 0x08) {
             if (inputBuffer.length > 0) {
               inputBuffer = inputBuffer.slice(0, -1);
+              if (activePrompt) activePrompt.input = inputBuffer;
               if (tuiEnabled) {
-                updatePromptLine(prompt, inputBuffer, promptX, promptY);
+                updatePromptLine(prompt, inputBuffer, promptX, promptY, lineWidth);
               }
             }
             continue;
@@ -2313,10 +2317,14 @@ async function interactiveCLI(): Promise<void> {
           if (byte === 0x0D || byte === 0x0A) {
             const line = inputBuffer.trim();
             inputBuffer = "";
+            // Clear active prompt state
+            activePrompt = null;
             // Clear prompt line
             if (tuiEnabled) {
               moveCursor(promptY, promptX);
-              Deno.stdout.writeSync(new TextEncoder().encode(prompt + " ".repeat(TUI_WIDTH - promptX - prompt.length)));
+              const totalWidth = Math.max(0, (lineWidth ?? (TUI_WIDTH - promptX + 1)));
+              const spaces = Math.max(0, totalWidth - prompt.length);
+              Deno.stdout.writeSync(new TextEncoder().encode(prompt + " ".repeat(spaces)));
             }
             // Reset decoder
             inputDecoder = new TextDecoder();
@@ -2331,10 +2339,11 @@ async function interactiveCLI(): Promise<void> {
           // Add character to buffer
           const char = String.fromCharCode(byte);
           inputBuffer += char;
+          if (activePrompt) activePrompt.input = inputBuffer;
           
           // Update prompt line to show typed characters
           if (tuiEnabled) {
-            updatePromptLine(prompt, inputBuffer, promptX, promptY);
+            updatePromptLine(prompt, inputBuffer, promptX, promptY, lineWidth);
           }
         }
         
@@ -2421,7 +2430,11 @@ async function interactiveCLI(): Promise<void> {
           const deviceManagementLoop = async () => {
             while (currentModal === "devices") {
               if (tuiEnabled) renderTUI();
-              const input = await readLine("devices> ", 7, 21); // Modal prompt position
+              // Calculate prompt position to match modal content area (inside border)
+              const promptX = 5 + 2; // modalX + 2
+              const promptY = 2 + 23 - 2; // modalY + modalH - 2
+              const lineWidth = 70 - 4; // modalW - 4 (inside borders and padding)
+              const input = await readLine("devices> ", promptX, promptY, lineWidth);
               if (input === null) break;
               
               if (!input) {
@@ -2458,8 +2471,14 @@ async function interactiveCLI(): Promise<void> {
                     if (tuiEnabled) renderTUI();
                     break;
 
+                  case "set-default":
+                  case "default":
+                    await cmdSetDefault(cmdArgs);
+                    if (tuiEnabled) renderTUI();
+                    break;
+
                   default:
-                    addTUIMessage(`Unknown command: ${cmd}. Use: add, edit, delete, or done`);
+                    addTUIMessage(`Unknown command: ${cmd}. Use: add, edit, delete, set-default, or done`);
                     if (tuiEnabled) renderTUI();
                 }
               } catch (e) {
@@ -2741,10 +2760,48 @@ let currentModal: TUIView | null = null;
 const MAX_MESSAGES = 3;
 const TUI_WIDTH = 80;
 const TUI_HEIGHT = 24;
+let lastRenderTime = 0;
+let renderScheduled = false;
+let activePrompt: { prompt: string; x: number; y: number; width?: number; input: string } | null = null;
 
 function clearScreen(): void {
   // Use home position first, then clear to prevent buffer issues
   Deno.stdout.writeSync(new TextEncoder().encode("\x1b[H\x1b[2J"));
+}
+
+// Terminal control helpers for stable rendering (reduced flicker)
+function writeAnsi(s: string): void {
+  Deno.stdout.writeSync(new TextEncoder().encode(s));
+}
+
+function enterAltScreen(): void {
+  // Switch to alternate screen buffer and hide cursor
+  writeAnsi("\x1b[?1049h\x1b[?25l");
+}
+
+function exitAltScreen(): void {
+  // Return to normal buffer and show cursor
+  writeAnsi("\x1b[?1049l\x1b[?25h");
+}
+
+function enableRawMode(): void {
+  try {
+    // Enable raw mode for smoother input handling
+    // Safe to call multiple times
+    // deno-lint-ignore no-explicit-any
+    (Deno as any).setRaw?.(Deno.stdin.rid, true);
+  } catch {
+    // Raw mode not available in this environment; ignore
+  }
+}
+
+function disableRawMode(): void {
+  try {
+    // deno-lint-ignore no-explicit-any
+    (Deno as any).setRaw?.(Deno.stdin.rid, false);
+  } catch {
+    // Ignore if not supported
+  }
 }
 
 function moveCursor(row: number, col: number): void {
@@ -2822,20 +2879,10 @@ function addTUIMessage(message: string): void {
 }
 
 function renderHelpModal(): void {
-  const modalX = 8;
-  const modalY = 2;
-  const modalW = 64;
-  const modalH = 20;
-  
-  // Draw modal shadow/overlay effect
-  setColor("bgBlack");
-  for (let y = modalY; y < modalY + modalH; y++) {
-    for (let x = modalX; x < modalX + modalW; x++) {
-      moveCursor(y, x);
-      Deno.stdout.writeSync(new TextEncoder().encode(" "));
-    }
-  }
-  resetColor();
+  const modalX = 5;
+  const modalY = 1;
+  const modalW = 80;
+  const modalH = 26;
   
   // Draw modal border with enhanced styling
   drawBox(modalX, modalY, modalW, modalH, " 📚 Help - Commands ");
@@ -2858,15 +2905,15 @@ function renderHelpModal(): void {
   
   for (const { cmd, desc } of discoveryCommands) {
     setColor("bright", "white");
-    writeAt(modalX + 4, yPos, truncate(cmd, 22));
+    writeAt(modalX + 4, yPos, truncate(cmd, 30));
     resetColor();
     setColor("dim", "white");
-    writeAt(modalX + 27, yPos, truncate(desc, 33));
+    writeAt(modalX + 36, yPos, truncate(desc, 42));
     resetColor();
     yPos++;
   }
   
-  yPos++;
+  yPos += 2;
   
   // Category: Playback
   setColor("bright", "cyan");
@@ -2886,15 +2933,15 @@ function renderHelpModal(): void {
   
   for (const { cmd, desc } of playbackCommands) {
     setColor("bright", "white");
-    writeAt(modalX + 4, yPos, truncate(cmd, 22));
+    writeAt(modalX + 4, yPos, truncate(cmd, 30));
     resetColor();
     setColor("dim", "white");
-    writeAt(modalX + 27, yPos, truncate(desc, 33));
+    writeAt(modalX + 36, yPos, truncate(desc, 42));
     resetColor();
     yPos++;
   }
   
-  yPos++;
+  yPos += 2;
   
   // Category: Music Catalog
   setColor("bright", "cyan");
@@ -2905,14 +2952,14 @@ function renderHelpModal(): void {
   yPos++;
   
   setColor("bright", "white");
-  writeAt(modalX + 4, yPos, truncate("music, catalog", 22));
+  writeAt(modalX + 4, yPos, truncate("music, catalog", 30));
   resetColor();
   setColor("dim", "white");
-  writeAt(modalX + 27, yPos, truncate("Manage saved music (opens modal)", 33));
+  writeAt(modalX + 36, yPos, truncate("Manage saved music (opens modal)", 42));
   resetColor();
   yPos++;
   
-  yPos++;
+  yPos += 2;
   
   // Category: System
   setColor("bright", "cyan");
@@ -2931,18 +2978,23 @@ function renderHelpModal(): void {
   
   for (const { cmd, desc } of systemCommands) {
     setColor("bright", "white");
-    writeAt(modalX + 4, yPos, truncate(cmd, 22));
+    writeAt(modalX + 4, yPos, truncate(cmd, 30));
     resetColor();
     setColor("dim", "white");
-    writeAt(modalX + 27, yPos, truncate(desc, 33));
+    writeAt(modalX + 36, yPos, truncate(desc, 42));
     resetColor();
     yPos++;
   }
   
   // Footer
+  yPos = modalY + modalH - 3;
+  writeAt(modalX + 2, yPos, "─".repeat(modalW - 4));
+  yPos++;
   setColor("dim", "yellow");
-  writeAt(modalX + 2, modalY + modalH - 2, "💡 Quick start: scan → set-default 1 → play <URL>");
-  writeAt(modalX + 2, modalY + modalH - 1, "Press Enter to close...");
+  writeAt(modalX + 2, yPos, "💡 Quick start: scan → set-default 1 → play <URL>");
+  yPos++;
+  setColor("dim", "white");
+  writeAt(modalX + 2, yPos, "Press Enter to close...");
   resetColor();
 }
 
@@ -2950,17 +3002,7 @@ function renderDevicesModal(): void {
   const modalX = 5;
   const modalY = 2;
   const modalW = 70;
-  const modalH = 21;
-  
-  // Draw modal background
-  setColor("bgBlack");
-  for (let y = modalY; y < modalY + modalH; y++) {
-    for (let x = modalX; x < modalX + modalW; x++) {
-      moveCursor(y, x);
-      Deno.stdout.writeSync(new TextEncoder().encode(" "));
-    }
-  }
-  resetColor();
+  const modalH = 23;
   
   // Draw modal border
   const deviceCount = config.devices.length;
@@ -2982,13 +3024,16 @@ function renderDevicesModal(): void {
   resetColor();
   
   // Table rows
+  // Calculate max devices to show: ensure commands section (starting at cmdY) has room
+  // cmdY = modalY + modalH - 10, headerY = modalY + 2, so max rows = cmdY - headerY - 2
+  const maxDeviceRows = (modalY + modalH - 10) - (modalY + 2) - 2;
   let yPos = headerY + 2;
   if (config.devices.length === 0) {
     setColor("dim", "yellow");
     writeAt(modalX + 2, yPos, "⚠️  No devices found. Use 'add <name> <ip>' to add one.");
     resetColor();
   } else {
-    for (let i = 0; i < Math.min(config.devices.length, 12); i++) {
+    for (let i = 0; i < Math.min(config.devices.length, maxDeviceRows); i++) {
       const d = config.devices[i];
       const isDefault = d.ip === config.defaultDevice;
       
@@ -3026,25 +3071,25 @@ function renderDevicesModal(): void {
     }
   }
   
-  // Commands section - Better organized
-  const cmdY = modalY + modalH - 7;
+  // Commands section - Better organized with two columns
+  const cmdY = modalY + modalH - 10;
   setColor("bright", "yellow");
   writeAt(modalX + 2, cmdY, "💡 Commands:");
   resetColor();
   
   setColor("dim", "white");
+  // Left column
   writeAt(modalX + 2, cmdY + 1, "  add <name> <ip>        - Add new device");
   writeAt(modalX + 2, cmdY + 2, "  edit <n> <name>         - Change name only");
   writeAt(modalX + 2, cmdY + 3, "  edit <n> <ip>           - Change IP only");
   writeAt(modalX + 2, cmdY + 4, "  edit <n> <name> <ip>     - Change both");
   writeAt(modalX + 2, cmdY + 5, "  delete <n>              - Delete device #n");
+  writeAt(modalX + 2, cmdY + 6, "  set-default <n>        - Set device #n as default");
+  // Right column
   writeAt(modalX + 40, cmdY + 1, "  done/exit/q           - Close modal");
   resetColor();
   
-  // Prompt
-  setColor("bright", "green");
-  writeAt(modalX + 2, modalY + modalH - 1, "devices> ");
-  resetColor();
+  // Note: Prompt is rendered by readLine function, not here
 }
 
 function renderMusicModal(): void {
@@ -3052,16 +3097,6 @@ function renderMusicModal(): void {
   const modalY = 2;
   const modalW = 70;
   const modalH = 20;
-  
-  // Draw modal background
-  setColor("bgBlack");
-  for (let y = modalY; y < modalY + modalH; y++) {
-    for (let x = modalX; x < modalX + modalW; x++) {
-      moveCursor(y, x);
-      Deno.stdout.writeSync(new TextEncoder().encode(" "));
-    }
-  }
-  resetColor();
   
   // Draw modal border
   const trackCount = config.musicCatalog.length;
@@ -3140,16 +3175,6 @@ function renderStatusModal(): void {
   const modalY = 2;
   const modalW = 64;
   const modalH = 20;
-  
-  // Draw modal background
-  setColor("bgBlack");
-  for (let y = modalY; y < modalY + modalH; y++) {
-    for (let x = modalX; x < modalX + modalW; x++) {
-      moveCursor(y, x);
-      Deno.stdout.writeSync(new TextEncoder().encode(" "));
-    }
-  }
-  resetColor();
   
   // Draw modal border
   drawBox(modalX, modalY, modalW, modalH, " System Status ");
@@ -3362,15 +3387,17 @@ function renderMainView(): void {
     resetColor();
   }
   
-  // Keyboard shortcuts hint
-  setColor("dim", "white");
-  writeAt(1, shortcutsY, "💡 Quick: help | list | music | play <URL> | pause | resume | stop");
-  resetColor();
-  
-  // Command prompt - Enhanced
-  setColor("bright", "green");
-  writeAt(1, promptY, "sonos> ");
-  resetColor();
+  // Keyboard shortcuts hint - only show when no modal is active
+  if (!currentModal) {
+    setColor("dim", "white");
+    writeAt(1, shortcutsY, "💡 Quick: help | list | music | play <URL> | pause | resume | stop");
+    resetColor();
+    
+    // Command prompt - Enhanced
+    setColor("bright", "green");
+    writeAt(1, promptY, "sonos> ");
+    resetColor();
+  }
   
   // Render modal if active
   if (currentModal === "help") {
@@ -3386,11 +3413,29 @@ function renderMainView(): void {
 
 function renderTUI(): void {
   if (!tuiEnabled) return;
+  const now = Date.now();
+  const delta = now - lastRenderTime;
+  if (delta < 16) {
+    if (!renderScheduled) {
+      renderScheduled = true;
+      setTimeout(() => {
+        renderScheduled = false;
+        if (!tuiEnabled) return;
+        renderMainView();
+        lastRenderTime = Date.now();
+      }, 16 - delta);
+    }
+    return;
+  }
   renderMainView();
+  lastRenderTime = now;
 }
 
 async function startTUI(): Promise<void> {
   tuiEnabled = true;
+  enterAltScreen();
+  enableRawMode();
+  clearScreen();
   renderTUI();
   
   // Note: TUI will be updated manually when state changes
@@ -3400,6 +3445,8 @@ async function startTUI(): Promise<void> {
 function stopTUI(): void {
   tuiEnabled = false;
   clearScreen();
+  disableRawMode();
+  exitAltScreen();
 }
 
 // ============= Utilities =============
