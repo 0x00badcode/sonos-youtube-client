@@ -51,12 +51,12 @@ interface PlaybackState {
   server?: Promise<void>;
   streamActive?: boolean;
   activeProcesses?: { ytdlp?: Deno.ChildProcess; ffmpeg?: Deno.ChildProcess; downloader?: Deno.ChildProcess };
-  lastPosition?: number; // Position in seconds when paused
-  positionUpdateInterval?: number; // Interval ID for position tracking
-  cachedFilePath?: string; // Path to downloaded file for seek support
-  downloadInProgress?: boolean; // Whether background download is running
-  useFileStream?: boolean; // Whether to use file-based streaming (seekable)
-  lastPositionLogTime?: number; // Timestamp of last position log (to avoid spam)
+  lastPosition?: number;
+  positionUpdateInterval?: number;
+  cachedFilePath?: string;
+  downloadInProgress?: boolean;
+  useFileStream?: boolean;
+  lastPositionLogTime?: number;
 }
 
 // ============= Global State =============
@@ -91,11 +91,10 @@ async function log(message: string): Promise<void> {
       await logFile.write(encoder.encode(logMessage));
       await logFile.flush();
     } catch (e) {
-      // Log file write failed, ignore
+      console.error(`Failed to write to log file: ${e}`);
     }
   }
   
-  // Also log to console if not in TUI mode (check if tuiEnabled is defined)
   if (typeof tuiEnabled !== 'undefined' && !tuiEnabled) {
     console.log(logMessage.trim());
   }
@@ -113,16 +112,15 @@ async function closeLogging(): Promise<void> {
 async function loadConfig(): Promise<void> {
   try {
     await ensureDir(CONFIG_DIR);
-    await ensureDir(CACHE_DIR); // Ensure cache directory exists
+    await ensureDir(CACHE_DIR);
     const data = await Deno.readTextFile(CONFIG_FILE);
     config = JSON.parse(data);
-    // Ensure musicCatalog exists for backward compatibility
     if (!config.musicCatalog) {
       config.musicCatalog = [];
     }
   } catch {
     config = { devices: [], musicCatalog: [] };
-    await ensureDir(CACHE_DIR); // Ensure cache directory exists even on first run
+    await ensureDir(CACHE_DIR);
   }
 }
 
@@ -142,7 +140,6 @@ async function getNetworkInterfaces(): Promise<string[]> {
       }
     }
   } catch {
-    // Fallback to basic detection
     ips.push(getLocalIPv4() || "0.0.0.0");
   }
   return ips.length > 0 ? ips : ["0.0.0.0"];
@@ -167,7 +164,6 @@ async function discoverSonosDevices(timeoutMs = 5000, verbose = false): Promise<
   }
 
   try {
-    // Step 1: Browse for Sonos services
     const instanceNames = await browseSonosServices(timeoutMs, verbose);
     
     if (instanceNames.length === 0) {
@@ -175,7 +171,6 @@ async function discoverSonosDevices(timeoutMs = 5000, verbose = false): Promise<
     } else {
       if (verbose) console.log(`📡 Found ${instanceNames.length} Sonos service(s)`);
       
-      // Step 2 & 3: For each instance, resolve hostname and IP
       for (const instanceName of instanceNames) {
         try {
           const hostname = await lookupSonosHostname(instanceName, verbose);
@@ -184,7 +179,6 @@ async function discoverSonosDevices(timeoutMs = 5000, verbose = false): Promise<
           const ip = await resolveHostnameToIP(hostname, verbose);
           if (!ip) continue;
           
-          // Step 4: Fetch device info
           if (!devices.has(ip)) {
             const device = await fetchDeviceInfo(ip);
             devices.set(ip, device);
@@ -199,7 +193,6 @@ async function discoverSonosDevices(timeoutMs = 5000, verbose = false): Promise<
     if (verbose) console.log(`⚠️  Discovery error: ${e}`);
   }
   
-  // Also check saved devices
   if (config.devices.length > 0 && verbose) {
     console.log("📋 Verifying previously saved devices...");
   }
@@ -244,10 +237,9 @@ async function browseSonosServices(timeoutMs: number, verbose: boolean): Promise
         
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
-        buffer = lines.pop() || ""; // Keep incomplete line in buffer
+        buffer = lines.pop() || "";
         
         for (const line of lines) {
-          // Skip header lines
           if (line.includes("Instance Name") || line.includes("STARTING") || line.includes("DATE:")) {
             continue;
           }
@@ -256,8 +248,8 @@ async function browseSonosServices(timeoutMs: number, verbose: boolean): Promise
           // Format: timestamp  A/R  flags  if  domain  service_type  instance_name
           const parts = line.trim().split(/\s+/);
           if (parts.length >= 7) {
-            const action = parts[1]; // "Add" or "Rmv"
-            const instanceName = parts[parts.length - 1]; // Last part is the instance name
+            const action = parts[1];
+            const instanceName = parts[parts.length - 1];
             
             if (instanceName && instanceName.startsWith("Sonos-")) {
               if (action === "Add") {
@@ -311,10 +303,9 @@ async function lookupSonosHostname(instanceName: string, verbose: boolean): Prom
         buffer = lines.pop() || "";
         
         for (const line of lines) {
-          // Parse lines like: " 0:19:52.427  Sonos-B8E9372FF50E._sonos._tcp.local. can be reached at sonosB8E9372FF50E.local.:1443"
           const match = line.match(/can be reached at\s+([a-zA-Z0-9-]+\.local\.?)/);
           if (match) {
-            hostname = match[1].replace(/\.$/, ""); // Remove trailing dot if present
+            hostname = match[1].replace(/\.$/, "");
             if (verbose) console.log(`  Resolved ${instanceName} → ${hostname}`);
             break;
           }
@@ -364,8 +355,6 @@ async function resolveHostnameToIP(hostname: string, verbose: boolean): Promise<
         buffer = lines.pop() || "";
         
         for (const line of lines) {
-          // Parse lines like: " 0:20:41.843  Add  40000002      14  sonosB8E9372FF50E.local.               192.168.1.134                                120"
-          // Look for IPv4 addresses (not IPv6)
           const match = line.match(/\s+(\d+\.\d+\.\d+\.\d+)\s+\d+/);
           if (match) {
             ip = match[1];
@@ -419,7 +408,6 @@ async function fetchDeviceInfo(ip: string): Promise<SonosDevice> {
     if (res.ok) {
       const xml = await res.text();
       
-      // Extract device info from XML
       const roomMatch = xml.match(/<roomName>(.*?)<\/roomName>/i);
       const modelMatch = xml.match(/<modelName>(.*?)<\/modelName>/i);
       const displayMatch = xml.match(/<displayName>(.*?)<\/displayName>/i);
@@ -431,7 +419,7 @@ async function fetchDeviceInfo(ip: string): Promise<SonosDevice> {
       device.uuid = uuidMatch?.[1];
     }
   } catch {
-    // Keep default values
+    console.error(`Failed to fetch device info for ${ip}`);
   }
 
   return device;
@@ -453,7 +441,6 @@ async function setAVTransportURI(ip: string, uri: string): Promise<void> {
   await soap(ip, "/MediaRenderer/AVTransport/Control", "AVTransport", "SetAVTransportURI", body);
 }
 
-// Some Sonos transports require DIDL-Lite metadata for HTTP URIs to be accepted and seekable.
 async function setAVTransportURIWithMeta(ip: string, uri: string, metadata?: VideoMetadata): Promise<void> {
   const title = metadata?.title || "Stream";
   const artist = metadata?.uploader || metadata?.artist || "Unknown Artist";
@@ -529,7 +516,6 @@ async function stop(ip: string): Promise<void> {
 }
 
 async function seek(ip: string, positionSeconds: number): Promise<void> {
-  // Convert seconds to HH:MM:SS format
   const hours = Math.floor(positionSeconds / 3600);
   const minutes = Math.floor((positionSeconds % 3600) / 60);
   const seconds = Math.floor(positionSeconds % 60);
@@ -573,7 +559,6 @@ async function getPositionInfo(ip: string): Promise<{ position: number; duration
 
     const text = await response.text();
     
-    // Parse position (format: HH:MM:SS)
     const relTimeMatch = text.match(/<RelTime>(.*?)<\/RelTime>/);
     const trackDurationMatch = text.match(/<TrackDuration>(.*?)<\/TrackDuration>/);
     
@@ -632,21 +617,17 @@ async function soap(ip: string, path: string, service: string, action: string, x
 
 // ============= File Caching for Seek Support =============
 async function startBackgroundDownload(ytUrl: string): Promise<void> {
-  // Don't start if already downloading or file exists
   if (playbackState.downloadInProgress || playbackState.cachedFilePath) {
     return;
   }
 
   playbackState.downloadInProgress = true;
 
-  // Ensure cache directory exists
   await ensureDir(CACHE_DIR);
 
-  // Create a unique filename based on URL hash
   const urlHash = await hashString(ytUrl);
   const cacheFile = join(CACHE_DIR, `${urlHash}.mp3`);
 
-  // Check if file already exists
   try {
     const stat = await Deno.stat(cacheFile);
     if (stat.isFile) {
@@ -655,15 +636,13 @@ async function startBackgroundDownload(ytUrl: string): Promise<void> {
       return;
     }
   } catch {
-    // File doesn't exist, proceed with download
+    console.error(`File ${cacheFile} does not exist`);
   }
 
-  // Start background download
   (async () => {
     const ytdlpPath = await findCommandPath("yt-dlp");
     const ffmpegPath = await findCommandPath("ffmpeg");
 
-    // Download and convert to MP3 file
     const ytdlp = new Deno.Command(ytdlpPath, {
       args: ["-f", "bestaudio/best", "-o", "-", ytUrl],
       stdout: "piped",
@@ -678,7 +657,7 @@ async function startBackgroundDownload(ytUrl: string): Promise<void> {
         "-b:a", "192k",
         "-ar", "44100",
         "-ac", "2",
-        "-y", // Overwrite output file
+        "-y",
         cacheFile
       ],
       stdin: "piped",
@@ -689,15 +668,12 @@ async function startBackgroundDownload(ytUrl: string): Promise<void> {
     playbackState.activeProcesses = playbackState.activeProcesses || {};
     playbackState.activeProcesses.downloader = ytdlp;
 
-    // Pipe yt-dlp -> ffmpeg -> file
     ytdlp.stdout!.pipeTo(ffmpeg.stdin!).catch(() => {});
 
-    // Wait for ffmpeg to finish
     const ffmpegStatus = await ffmpeg.status;
     const ytdlpStatus = await ytdlp.status;
 
     if (ffmpegStatus.success && ytdlpStatus.success) {
-      // Verify file exists and has content
       try {
         const stat = await Deno.stat(cacheFile);
         if (stat.isFile && stat.size > 0) {
@@ -707,7 +683,7 @@ async function startBackgroundDownload(ytUrl: string): Promise<void> {
           }
         }
       } catch {
-        // File creation failed
+        console.error(`Failed to create file ${cacheFile}`);
       }
     }
 
@@ -729,7 +705,6 @@ async function hashString(str: string): Promise<string> {
 
 // ============= Stream Handlers =============
 async function handleFileStream(req: Request, filePath: string): Promise<Response> {
-  // Check if file exists
   let fileStat;
   try {
     fileStat = await Deno.stat(filePath);
@@ -740,28 +715,24 @@ async function handleFileStream(req: Request, filePath: string): Promise<Respons
   const fileSize = fileStat.size;
   const rangeHeader = req.headers.get("range");
 
-  // Open file
   const file = await Deno.open(filePath, { read: true });
 
   if (rangeHeader) {
-    // Parse Range header (e.g., "bytes=0-1023" or "bytes=1024-")
     const rangeMatch = rangeHeader.match(/bytes=(\d+)-(\d*)/);
     if (rangeMatch) {
       const start = parseInt(rangeMatch[1], 10);
       const end = rangeMatch[2] ? parseInt(rangeMatch[2], 10) : fileSize - 1;
       const chunkSize = end - start + 1;
 
-      // Seek to start position
       await file.seek(start, Deno.SeekMode.Start);
 
-      // Read chunk
       const buffer = new Uint8Array(chunkSize);
       await file.read(buffer);
 
       file.close();
 
       return new Response(buffer, {
-        status: 206, // Partial Content
+        status: 206,
         headers: {
           "Content-Type": "audio/mpeg",
           "Content-Range": `bytes ${start}-${end}/${fileSize}`,
@@ -772,8 +743,6 @@ async function handleFileStream(req: Request, filePath: string): Promise<Respons
     }
   }
 
-  // No range request - stream entire file
-  // Note: file.readable will auto-close the file when done
   return new Response(file.readable, {
     headers: {
       "Content-Type": "audio/mpeg",
@@ -784,7 +753,6 @@ async function handleFileStream(req: Request, filePath: string): Promise<Respons
 }
 
 async function handleLiveStream(req: Request, ytUrl: string): Promise<Response> {
-  // Prevent multiple simultaneous streams
   if (playbackState.streamActive) {
     return new Response("Stream already active", { status: 409 });
   }
@@ -794,18 +762,15 @@ async function handleLiveStream(req: Request, ytUrl: string): Promise<Response> 
     console.log("🎵 Sonos connected to stream, starting playback...");
   }
 
-  // Find command paths
   const ytdlpPath = await findCommandPath("yt-dlp");
   const ffmpegPath = await findCommandPath("ffmpeg");
 
-  // Start yt-dlp
   const ytdlp = new Deno.Command(ytdlpPath, {
     args: ["-f", "bestaudio/best", "-o", "-", ytUrl],
     stdout: "piped",
     stderr: "null",
   }).spawn();
 
-  // Convert with ffmpeg - add buffer size for better streaming
   const ffmpeg = new Deno.Command(ffmpegPath, {
     args: [
       "-loglevel", "error",
@@ -814,7 +779,7 @@ async function handleLiveStream(req: Request, ytUrl: string): Promise<Response> 
       "-b:a", "192k",
       "-ar", "44100",
       "-ac", "2",
-      "-bufsize", "64k", // Add buffer size
+      "-bufsize", "64k",
       "pipe:1"
     ],
     stdin: "piped",
@@ -822,12 +787,10 @@ async function handleLiveStream(req: Request, ytUrl: string): Promise<Response> 
     stderr: "null",
   }).spawn();
 
-  // Store process references for cleanup
   playbackState.activeProcesses = playbackState.activeProcesses || {};
   playbackState.activeProcesses.ytdlp = ytdlp;
   playbackState.activeProcesses.ffmpeg = ffmpeg;
 
-  // Pipe yt-dlp -> ffmpeg with error handling
   ytdlp.stdout!.pipeTo(ffmpeg.stdin!).catch(() => {});
 
   let controllerClosed = false;
@@ -839,30 +802,27 @@ async function handleLiveStream(req: Request, ytUrl: string): Promise<Response> 
       cleanupDone = true;
       playbackState.streamActive = false;
       
-      // Cancel and release reader first
       if (reader) {
         try {
           await reader.cancel();
         } catch {
-          // Ignore
+          console.error(`Failed to cancel reader: ${e}`);
         }
         try {
           reader.releaseLock();
         } catch {
-          // Ignore
+            console.error(`Failed to release reader lock: ${e}`);
         }
         reader = null;
       }
 
-      // Kill processes with SIGKILL for immediate termination
       const killProcess = async (proc: Deno.ChildProcess | undefined) => {
         if (!proc) return;
         try {
           proc.kill("SIGKILL");
-          // Wait briefly for process to terminate
           await proc.status().catch(() => {});
         } catch {
-          // Process already terminated or doesn't exist
+          console.error(`Failed to kill process: ${e}`);
         }
       };
 
@@ -871,7 +831,6 @@ async function handleLiveStream(req: Request, ytUrl: string): Promise<Response> 
         killProcess(playbackState.activeProcesses?.ytdlp),
       ]);
 
-      // Clear process references (but keep downloader if running)
       if (playbackState.activeProcesses) {
         delete playbackState.activeProcesses.ffmpeg;
         delete playbackState.activeProcesses.ytdlp;
@@ -879,10 +838,8 @@ async function handleLiveStream(req: Request, ytUrl: string): Promise<Response> 
     }
   };
 
-  // Create the stream immediately - don't wait for processes
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
-      // Start reading immediately - read() will wait for data
       reader = ffmpeg.stdout!.getReader();
       (async () => {
         try {
@@ -890,17 +847,16 @@ async function handleLiveStream(req: Request, ytUrl: string): Promise<Response> 
             const { value, done } = await reader!.read();
             if (done) break;
             if (value && !controllerClosed) {
-              // Handle backpressure - only enqueue if controller is ready
               try {
                 controller.enqueue(value);
               } catch {
-                // Controller closed or errored, stop reading
+                console.error(`Failed to enqueue value: ${e}`);
                 break;
               }
             }
           }
         } catch (e) {
-          // Log error for debugging
+          console.error(`Stream error: ${e}`);
           if (!tuiEnabled) {
             console.error("Stream error:", e);
           }
@@ -910,7 +866,7 @@ async function handleLiveStream(req: Request, ytUrl: string): Promise<Response> 
             try {
               controller.close();
             } catch {
-              // Controller already closed
+              console.error(`Failed to close controller: ${e}`);
             }
             controllerClosed = true;
           }
@@ -934,7 +890,7 @@ async function handleLiveStream(req: Request, ytUrl: string): Promise<Response> 
 
 // ============= Streaming Server =============
 async function startStreamingServer(ytUrl: string, deviceIp: string): Promise<void> {
-  // Stop any existing stream
+  console.error(`Starting streaming server for ${ytUrl}`);
   await stopCurrentStream();
 
   const localIp = getLocalIPv4();
@@ -949,10 +905,9 @@ async function startStreamingServer(ytUrl: string, deviceIp: string): Promise<vo
   playbackState.serverController = new AbortController();
   playbackState.currentUrl = ytUrl;
   playbackState.isPlaying = true;
-  playbackState.useFileStream = false; // Start with live streaming
+  playbackState.useFileStream = false;
   playbackState.activeProcesses = {};
 
-  // Start background download for seek support
   startBackgroundDownload(ytUrl);
 
   const server = Deno.serve(
@@ -960,7 +915,7 @@ async function startStreamingServer(ytUrl: string, deviceIp: string): Promise<vo
       hostname: "0.0.0.0", 
       port, 
       signal: playbackState.serverController.signal,
-      onListen: () => {} // Suppress default log
+      onListen: () => {}
     },
     async (req) => {
       const url = new URL(req.url);
@@ -968,23 +923,18 @@ async function startStreamingServer(ytUrl: string, deviceIp: string): Promise<vo
         return new Response("Not found", { status: 404 });
       }
 
-      // Check if we should use file-based streaming (seekable)
       const useFile = playbackState.useFileStream && playbackState.cachedFilePath;
       
       if (useFile) {
-        // File-based streaming with Range support (seekable)
         return await handleFileStream(req, playbackState.cachedFilePath!);
       } else {
-        // Live streaming (original behavior)
         return await handleLiveStream(req, ytUrl);
       }
     },
   );
 
-  // Store server promise for proper cleanup
   playbackState.server = server;
 
-  // Wait a moment for server to be ready
   await new Promise(resolve => setTimeout(resolve, 100));
 
   const streamUrl = `http://${localIp}:${port}${STREAM_PATH}`;
@@ -994,7 +944,6 @@ async function startStreamingServer(ytUrl: string, deviceIp: string): Promise<vo
   await setAVTransportURI(deviceIp, rinconUri);
   await log(`STREAM: URI set successfully`);
   
-  // Wait a bit more before playing to ensure URI is set
   await new Promise(resolve => setTimeout(resolve, 200));
   
   await log(`STREAM: Sending play command to device`);
@@ -1013,7 +962,6 @@ async function startQueueStreamingServer(ytUrl: string): Promise<string> {
     throw new Error("Cannot determine local IP address");
   }
 
-  // Find an available port for the queue stream
   const port = await chooseAvailablePort(17800, 18000);
   if (port === 0) {
     throw new Error("No available port for queue stream");
@@ -1026,7 +974,7 @@ async function startQueueStreamingServer(ytUrl: string): Promise<string> {
       hostname: "0.0.0.0", 
       port, 
       signal: serverController.signal,
-      onListen: () => {} // Suppress default log
+      onListen: () => {}
     },
     async (req) => {
       const url = new URL(req.url);
@@ -1034,18 +982,15 @@ async function startQueueStreamingServer(ytUrl: string): Promise<string> {
         return new Response("Not found", { status: 404 });
       }
 
-      // Find command paths
       const ytdlpPath = await findCommandPath("yt-dlp");
       const ffmpegPath = await findCommandPath("ffmpeg");
 
-      // Start yt-dlp
       const ytdlp = new Deno.Command(ytdlpPath, {
         args: ["-f", "bestaudio/best", "-o", "-", ytUrl],
         stdout: "piped",
         stderr: "null",
       }).spawn();
 
-      // Convert with ffmpeg
       const ffmpeg = new Deno.Command(ffmpegPath, {
         args: [
           "-loglevel", "error",
@@ -1061,7 +1006,6 @@ async function startQueueStreamingServer(ytUrl: string): Promise<string> {
         stderr: "null",
       }).spawn();
 
-      // Pipe yt-dlp -> ffmpeg
       ytdlp.stdout!.pipeTo(ffmpeg.stdin!).catch(() => {});
 
       let controllerClosed = false;
@@ -1072,12 +1016,12 @@ async function startQueueStreamingServer(ytUrl: string): Promise<string> {
           try {
             await reader.cancel();
           } catch {
-            // Ignore
+              console.error(`Failed to cancel reader: ${e}`);
           }
           try {
             reader.releaseLock();
           } catch {
-            // Ignore
+              console.error(`Failed to release reader lock: ${e}`);
           }
         }
 
@@ -1087,7 +1031,7 @@ async function startQueueStreamingServer(ytUrl: string): Promise<string> {
             proc.kill("SIGKILL");
             await proc.status().catch(() => {});
           } catch {
-            // Process already terminated
+            console.error(`Failed to kill process: ${e}`);
           }
         };
 
@@ -1114,14 +1058,14 @@ async function startQueueStreamingServer(ytUrl: string): Promise<string> {
                 }
               }
             } catch {
-              // Ignore errors
+              console.error(`Stream error: ${e}`);
             } finally {
               await cleanup();
               if (!controllerClosed) {
                 try {
                   controller.close();
                 } catch {
-                  // Controller already closed
+                  console.error(`Failed to close controller: ${e}`);
                 }
                 controllerClosed = true;
               }
@@ -1144,16 +1088,14 @@ async function startQueueStreamingServer(ytUrl: string): Promise<string> {
     },
   );
 
-  // Keep server running in background
   server.catch(() => {
-    // Server closed, ignore
+    console.error(`Server closed: ${e}`);
   });
 
   return `http://${localIp}:${port}${STREAM_PATH}`;
 }
 
 async function stopCurrentStream(): Promise<void> {
-  // Clean up active processes first
   if (playbackState.activeProcesses) {
     const killProcess = async (proc: Deno.ChildProcess | undefined) => {
       if (!proc) return;
@@ -1161,7 +1103,7 @@ async function stopCurrentStream(): Promise<void> {
         proc.kill("SIGKILL");
         await proc.status().catch(() => {});
       } catch {
-        // Process already terminated
+        console.error(`Failed to kill process: ${e}`);
       }
     };
 
@@ -1173,18 +1115,16 @@ async function stopCurrentStream(): Promise<void> {
     playbackState.activeProcesses = {};
   }
 
-  // Abort server
   if (playbackState.serverController) {
     playbackState.serverController.abort();
     playbackState.serverController = undefined;
   }
 
-  // Wait for server to finish
   if (playbackState.server) {
     try {
       await playbackState.server;
     } catch {
-      // Server already closed
+      console.error(`Failed to wait for server: ${e}`);
     }
     playbackState.server = undefined;
   }
@@ -1195,7 +1135,6 @@ async function stopCurrentStream(): Promise<void> {
   playbackState.streamActive = false;
   playbackState.useFileStream = false;
   playbackState.downloadInProgress = false;
-  // Note: We keep cachedFilePath for potential reuse
   
   if (tuiEnabled) {
     renderTUI();
@@ -1216,7 +1155,6 @@ async function cmdScan(args: string[]): Promise<void> {
     return;
   }
 
-  // Update saved devices
   config.devices = devices;
   config.lastScan = new Date().toISOString();
   await saveConfig();
@@ -1250,22 +1188,18 @@ async function cmdPlay(args: string[]): Promise<void> {
   
   let targetIp: string | undefined;
   
-  // Check if device specified
   const deviceArg = args.find(a => !a.startsWith("http"));
   if (deviceArg) {
-    // Check if it's an index
     const index = parseInt(deviceArg);
     if (!isNaN(index) && index > 0 && index <= config.devices.length) {
       targetIp = config.devices[index - 1].ip;
       await log(`PLAY: Device specified by index=${index}, ip=${targetIp}`);
     } else if (deviceArg.includes(".")) {
-      // It's an IP
       targetIp = deviceArg;
       await log(`PLAY: Device specified by IP=${targetIp}`);
     }
   }
 
-  // Use default if not specified
   if (!targetIp) {
     targetIp = config.defaultDevice;
     await log(`PLAY: Using default device=${targetIp}`);
@@ -1278,14 +1212,12 @@ async function cmdPlay(args: string[]): Promise<void> {
     return;
   }
 
-  // Check dependencies
   if (!await checkDependencies()) {
     await log(`PLAY: Missing dependencies, aborting`);
     addTUIMessage("❌ Missing dependencies. Check installation.");
     return;
   }
 
-  // Find device info
   const device = config.devices.find(d => d.ip === targetIp) || {
     ip: targetIp,
     name: targetIp,
@@ -1299,7 +1231,6 @@ async function cmdPlay(args: string[]): Promise<void> {
   addTUIMessage(`🎵 Starting playback on ${device.name}...`);
   if (tuiEnabled) renderTUI();
   
-  // Fetch metadata in background
   const metadataPromise = fetchVideoMetadata(url);
   
   try {
@@ -1307,7 +1238,6 @@ async function cmdPlay(args: string[]): Promise<void> {
     await startStreamingServer(url, targetIp);
     await log(`PLAY: Streaming server started`);
     
-    // Update metadata when available
     const metadata = await metadataPromise;
     if (metadata) {
       playbackState.currentMetadata = metadata;
@@ -1320,7 +1250,6 @@ async function cmdPlay(args: string[]): Promise<void> {
       if (tuiEnabled) renderTUI();
     }
     
-    // Start position tracking
     playbackState.isPaused = false;
     startPositionTracking(targetIp);
     await log(`PLAY: Position tracking started, isPaused=false`);
@@ -1346,11 +1275,9 @@ async function cmdNext(args: string[]): Promise<void> {
   let url: string | undefined;
   let targetIp: string | undefined;
 
-  // Check if first arg is a URL
   const urlArg = args.find(a => a.startsWith("http"));
   if (urlArg) {
     url = urlArg;
-    // Check if device specified (non-URL arg)
     const deviceArg = args.find(a => !a.startsWith("http"));
     if (deviceArg) {
       const index = parseInt(deviceArg);
@@ -1361,7 +1288,6 @@ async function cmdNext(args: string[]): Promise<void> {
       }
     }
   } else {
-    // First arg is not a URL, check if it's a music library entry
     const identifier = args[0];
     let musicIndex = -1;
     const index = parseInt(identifier);
@@ -1379,7 +1305,6 @@ async function cmdNext(args: string[]): Promise<void> {
     
     url = config.musicCatalog[musicIndex].url;
     
-    // Check if device specified (second arg)
     if (args.length > 1) {
       const deviceArg = args[1];
       const deviceIndex = parseInt(deviceArg);
@@ -1391,7 +1316,6 @@ async function cmdNext(args: string[]): Promise<void> {
     }
   }
 
-  // Use default if not specified
   if (!targetIp) {
     targetIp = config.defaultDevice;
   }
@@ -1402,13 +1326,11 @@ async function cmdNext(args: string[]): Promise<void> {
     return;
   }
 
-  // Check dependencies
   if (!await checkDependencies()) {
     addTUIMessage("❌ Missing dependencies. Check installation.");
     return;
   }
 
-  // Find device info
   const device = config.devices.find(d => d.ip === targetIp) || {
     ip: targetIp,
     name: targetIp,
@@ -1420,19 +1342,14 @@ async function cmdNext(args: string[]): Promise<void> {
   addTUIMessage(`📥 Queuing song on ${device.name}...`);
   if (tuiEnabled) renderTUI();
 
-  // Fetch metadata in background
   const metadataPromise = fetchVideoMetadata(url);
 
   try {
-    // Create streaming server for queue
     const streamUrl = await startQueueStreamingServer(url);
-    // For file-based streaming, use plain HTTP URI (seekable)
     await setAVTransportURI(targetIp, streamUrl);
     
-    // Add to queue
     await addURIToQueue(targetIp, streamUrl);
 
-    // Update metadata when available
     const metadata = await metadataPromise;
     if (metadata) {
       addTUIMessage(`✅ Queued: ${metadata.title}`);
@@ -1447,19 +1364,16 @@ async function cmdNext(args: string[]): Promise<void> {
 }
 
 function startPositionTracking(deviceIp: string): void {
-  // Clear any existing interval
   if (playbackState.positionUpdateInterval !== undefined) {
     clearInterval(playbackState.positionUpdateInterval);
   }
   
-  // Update position every 2 seconds
   playbackState.positionUpdateInterval = setInterval(async () => {
     if (playbackState.isPlaying && !playbackState.isPaused && playbackState.currentDevice) {
       const posInfo = await getPositionInfo(deviceIp);
       if (posInfo) {
         const oldPosition = playbackState.lastPosition;
         playbackState.lastPosition = posInfo.position;
-        // Log position updates every 10 seconds to avoid log spam
         if (!playbackState.lastPositionLogTime || Date.now() - playbackState.lastPositionLogTime > 10000) {
           await log(`POSITION: Updated - ${posInfo.position}s (${formatDuration(posInfo.position)}) / ${posInfo.duration}s (${formatDuration(posInfo.duration)}), was=${oldPosition || 'none'}`);
           playbackState.lastPositionLogTime = Date.now();
@@ -1495,7 +1409,6 @@ async function cmdPause(): Promise<void> {
   }
 
   try {
-    // Get current position before pausing
     await log(`PAUSE: Getting position info from device ${playbackState.currentDevice.ip}`);
     const posInfo = await getPositionInfo(playbackState.currentDevice.ip);
     if (posInfo) {
@@ -1507,12 +1420,9 @@ async function cmdPause(): Promise<void> {
     
     await log(`PAUSE: State before pause - lastPosition=${playbackState.lastPosition}, useFileStream=${playbackState.useFileStream}, cachedFilePath=${playbackState.cachedFilePath || 'none'}`);
     
-    // Pause on Sonos device
     await log(`PAUSE: Sending pause command to Sonos`);
     await pause(playbackState.currentDevice.ip);
-    
-    // Stop the live stream to save resources
-    // Keep the server running but stop active streaming processes
+
     if (playbackState.activeProcesses) {
       await log(`PAUSE: Stopping live stream processes - hasFFmpeg=${!!playbackState.activeProcesses.ffmpeg}, hasYtdlp=${!!playbackState.activeProcesses.ytdlp}`);
       const killProcess = async (proc: Deno.ChildProcess | undefined) => {
@@ -1521,7 +1431,7 @@ async function cmdPause(): Promise<void> {
           proc.kill("SIGKILL");
           await proc.status().catch(() => {});
         } catch {
-          // Process already terminated
+          console.error(`Failed to kill process: ${e}`);
         }
       };
 
@@ -1530,7 +1440,6 @@ async function cmdPause(): Promise<void> {
         killProcess(playbackState.activeProcesses.ytdlp),
       ]);
 
-      // Clear live stream processes (keep downloader if running)
       delete playbackState.activeProcesses.ffmpeg;
       delete playbackState.activeProcesses.ytdlp;
       playbackState.streamActive = false;
@@ -1574,11 +1483,9 @@ async function getTransportInfo(ip: string): Promise<{ state: string; position: 
 
     const text = await response.text();
     
-    // Parse CurrentTransportState (PLAYING, PAUSED_PLAYBACK, STOPPED, etc.)
     const stateMatch = text.match(/<CurrentTransportState>(.*?)<\/CurrentTransportState>/);
     const state = stateMatch ? stateMatch[1] : null;
     
-    // Also get current position
     const posInfo = await getPositionInfo(ip);
     
     return {
@@ -1601,15 +1508,12 @@ async function cmdResume(): Promise<void> {
   }
 
   try {
-    // Get current state and position from device
     await log(`RESUME: Getting transport info from device ${playbackState.currentDevice.ip}`);
     const transportInfo = await getTransportInfo(playbackState.currentDevice.ip);
     await log(`RESUME: Transport info - state=${transportInfo?.state || 'null'}, position=${transportInfo?.position || 0}`);
     
-    // Determine resume position
     let resumePosition = 0;
     if (transportInfo) {
-      // If already playing, don't do anything
       if (transportInfo.state === "PLAYING") {
         await log(`RESUME: Already playing, aborting`);
         addTUIMessage("▶️  Already playing");
@@ -1619,13 +1523,11 @@ async function cmdResume(): Promise<void> {
         return;
       }
       
-      // Use current position from device if available, otherwise use lastPosition
       resumePosition = transportInfo.position > 0 
         ? transportInfo.position 
         : (playbackState.lastPosition || 0);
       await log(`RESUME: Resume position from transportInfo - ${resumePosition}s`);
     } else if (playbackState.lastPosition !== undefined && playbackState.lastPosition > 0) {
-      // Fallback: use last known position if we can't get current state
       resumePosition = playbackState.lastPosition;
       await log(`RESUME: Using lastPosition fallback - ${resumePosition}s`);
     } else {
@@ -1634,24 +1536,20 @@ async function cmdResume(): Promise<void> {
     
     await log(`RESUME: State check - lastPosition=${playbackState.lastPosition}, useFileStream=${playbackState.useFileStream}, cachedFilePath=${playbackState.cachedFilePath || 'none'}`);
     
-    // Check if we have a cached file for seek support
     const hasCachedFile = playbackState.cachedFilePath && 
       await Deno.stat(playbackState.cachedFilePath).then(() => true).catch(() => false);
     await log(`RESUME: Cached file check - hasCachedFile=${hasCachedFile}, resumePosition=${resumePosition}`);
     
     if (hasCachedFile && resumePosition > 0) {
       await log(`RESUME: Using file-based streaming with seek support`);
-      // Use file-based streaming with seek support
       playbackState.useFileStream = true;
       
       await log(`RESUME: Stopping old server`);
-      // Properly stop old server first
       if (playbackState.serverController) {
         playbackState.serverController.abort();
         playbackState.serverController = undefined;
       }
       
-      // Wait for old server to close
       if (playbackState.server) {
         try {
           await playbackState.server;
@@ -1662,16 +1560,13 @@ async function cmdResume(): Promise<void> {
         playbackState.server = undefined;
       }
       
-      // Wait a bit for port to be released
       await new Promise(resolve => setTimeout(resolve, 300));
       
-      // Restart server with file streaming mode
       const localIp = getLocalIPv4();
       if (!localIp) {
         throw new Error("Cannot determine local IP address");
       }
 
-      // Use a new port to avoid conflicts
       const port = await chooseAvailablePort(17800, 18000);
       if (port === 0) {
         throw new Error("No available port for stream");
@@ -1700,7 +1595,6 @@ async function cmdResume(): Promise<void> {
 
       playbackState.server = server;
       
-      // Wait for server to be ready
       await new Promise(resolve => setTimeout(resolve, 100));
       
       const baseUrl = `http://${localIp}:${port}`;
@@ -1708,7 +1602,6 @@ async function cmdResume(): Promise<void> {
       const streamFileUrl = `${baseUrl}${STREAM_FILE_PATH}`;
       await log(`RESUME: Stream URLs - streamUrl=${streamUrl}, streamFileUrl=${streamFileUrl}`);
       
-      // For file-based streaming, try plain HTTP with DIDL metadata first (seekable)
       try {
         await log(`RESUME: Attempting setAVTransportURIWithMeta with streamFileUrl`);
         await setAVTransportURIWithMeta(playbackState.currentDevice.ip, streamFileUrl, playbackState.currentMetadata || undefined);
@@ -1718,7 +1611,6 @@ async function cmdResume(): Promise<void> {
         if (!tuiEnabled) {
           console.error("SetAVTransportURIWithMeta failed, falling back to plain HTTP:", e);
         }
-        // Fallback: try without metadata
         try {
           await log(`RESUME: Attempting setAVTransportURI (plain HTTP)`);
           await setAVTransportURI(playbackState.currentDevice.ip, streamFileUrl);
@@ -1728,23 +1620,19 @@ async function cmdResume(): Promise<void> {
           if (!tuiEnabled) {
             console.error("SetAVTransportURI (HTTP) failed, falling back to radio URI:", e2);
           }
-          // Final fallback: use radio transport which is always accepted (no seek)
           const rinconUri = `x-rincon-mp3radio://${streamUrl}`;
           await log(`RESUME: Using fallback radio URI: ${rinconUri}`);
           await setAVTransportURI(playbackState.currentDevice.ip, rinconUri);
         }
       }
       
-      // Wait a bit before playing
       await new Promise(resolve => setTimeout(resolve, 200));
       
       await log(`RESUME: Sending play command`);
       await play(playbackState.currentDevice.ip);
       
-      // Wait for playback to start, then seek
       await new Promise(resolve => setTimeout(resolve, 800));
       
-      // Seek to resume position - this should work with file-based streaming
       await log(`RESUME: Seeking to position ${resumePosition}s (${formatDuration(resumePosition)})`);
       await seek(playbackState.currentDevice.ip, resumePosition);
       playbackState.lastPosition = resumePosition;
@@ -1753,15 +1641,12 @@ async function cmdResume(): Promise<void> {
       addTUIMessage(`▶️  Resuming from ${formatDuration(resumePosition)} (seekable)`);
     } else {
       await log(`RESUME: Using live streaming fallback - hasCachedFile=${hasCachedFile}, resumePosition=${resumePosition}`);
-      // Fallback to live streaming (original behavior)
       playbackState.useFileStream = false;
       
-      // Restart live streaming (this will properly stop old server)
       if (playbackState.currentUrl) {
         await log(`RESUME: Starting live streaming server`);
         await startStreamingServer(playbackState.currentUrl, playbackState.currentDevice.ip);
         
-        // Try to seek if we have a position (may not work with live stream)
         if (resumePosition > 0) {
           await new Promise(resolve => setTimeout(resolve, 1000));
           try {
@@ -1792,7 +1677,6 @@ async function cmdResume(): Promise<void> {
     playbackState.isPlaying = true;
     await log(`RESUME: State updated - isPaused=false, isPlaying=true`);
     
-    // Restart position tracking
     if (playbackState.currentDevice) {
       startPositionTracking(playbackState.currentDevice.ip);
       await log(`RESUME: Position tracking restarted`);
@@ -1816,7 +1700,6 @@ async function cmdStop(): Promise<void> {
 
   await stopCurrentStream();
   
-  // Stop on device if we have a default
   if (config.defaultDevice) {
     try {
       await stop(config.defaultDevice);
@@ -1865,28 +1748,24 @@ async function cmdAddSonos(args: string[]): Promise<void> {
   const name = args[0];
   const ip = args[1];
 
-  // Validate IP format
   const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
   if (!ipRegex.test(ip)) {
     addTUIMessage(`❌ Invalid IP address format: ${ip}`);
     return;
   }
 
-  // Check if IP already exists
   const existingByIp = config.devices.find(d => d.ip === ip);
   if (existingByIp) {
     addTUIMessage(`❌ IP ${ip} already exists as: ${existingByIp.name}`);
     return;
   }
 
-  // Check if name already exists
   const existingByName = config.devices.find(d => d.name.toLowerCase() === name.toLowerCase());
   if (existingByName) {
     addTUIMessage(`❌ Name "${name}" already exists with IP: ${existingByName.ip}`);
     return;
   }
 
-  // Try to fetch device info to get model/room
   const deviceInfo = await fetchDeviceInfo(ip);
   const newDevice: SonosDevice = {
     ip,
@@ -1917,33 +1796,26 @@ async function cmdUpdateSonos(args: string[]): Promise<void> {
   const identifier = args[0];
   const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
   
-  // Determine what to update based on arguments
   let newName: string | undefined;
   let newIp: string | undefined;
   
   if (args.length === 2) {
-    // Two arguments: could be name or IP
     const arg2 = args[1];
     if (ipRegex.test(arg2)) {
-      // It's an IP - update IP only
       newIp = arg2;
     } else {
-      // It's a name - update name only
       newName = arg2;
     }
   } else if (args.length >= 3) {
-    // Three or more arguments: name and IP
     newName = args[1];
     newIp = args[2];
     
-    // Validate IP format
     if (!ipRegex.test(newIp)) {
       addTUIMessage(`❌ Invalid IP address format: ${newIp}`);
       return;
     }
   }
 
-  // Find device by index or name
   let deviceIndex = -1;
   const index = parseInt(identifier);
   if (!isNaN(index) && index > 0 && index <= config.devices.length) {
@@ -1961,18 +1833,15 @@ async function cmdUpdateSonos(args: string[]): Promise<void> {
   const oldIp = oldDevice.ip;
   const oldName = oldDevice.name;
 
-  // Use old values if not updating
   const finalName = newName !== undefined ? newName : oldName;
   const finalIp = newIp !== undefined ? newIp : oldIp;
 
-  // Validate IP if provided
   if (newIp !== undefined) {
     if (!ipRegex.test(newIp)) {
       addTUIMessage(`❌ Invalid IP address format: ${newIp}`);
       return;
     }
     
-    // Check if new IP conflicts with another device
     if (newIp !== oldIp) {
       const existingByIp = config.devices.find((d, i) => i !== deviceIndex && d.ip === newIp);
       if (existingByIp) {
@@ -1982,7 +1851,6 @@ async function cmdUpdateSonos(args: string[]): Promise<void> {
     }
   }
 
-  // Check if new name conflicts with another device
   if (newName !== undefined && newName.toLowerCase() !== oldDevice.name.toLowerCase()) {
     const existingByName = config.devices.find((d, i) => i !== deviceIndex && d.name.toLowerCase() === newName.toLowerCase());
     if (existingByName) {
@@ -1991,7 +1859,6 @@ async function cmdUpdateSonos(args: string[]): Promise<void> {
     }
   }
 
-  // Update device
   const updatedDevice: SonosDevice = {
     ...oldDevice,
     name: finalName,
@@ -1999,7 +1866,6 @@ async function cmdUpdateSonos(args: string[]): Promise<void> {
     lastSeen: new Date().toISOString(),
   };
 
-  // If IP changed, try to fetch updated device info
   if (newIp !== undefined && newIp !== oldIp) {
     const deviceInfo = await fetchDeviceInfo(newIp);
     if (deviceInfo.model !== "Unknown") {
@@ -2012,14 +1878,12 @@ async function cmdUpdateSonos(args: string[]): Promise<void> {
 
   config.devices[deviceIndex] = updatedDevice;
 
-  // Update default device if it was the one being updated
   if (config.defaultDevice === oldIp && newIp !== undefined) {
     config.defaultDevice = newIp;
   }
 
   await saveConfig();
 
-  // Build update message
   const changes: string[] = [];
   if (newName !== undefined && newName !== oldName) {
     changes.push(`${oldName} → ${newName}`);
@@ -2047,7 +1911,6 @@ async function cmdDeleteSonos(args: string[]): Promise<void> {
 
   const identifier = args[0];
 
-  // Find device by index or name
   let deviceIndex = -1;
   const index = parseInt(identifier);
   if (!isNaN(index) && index > 0 && index <= config.devices.length) {
@@ -2063,10 +1926,8 @@ async function cmdDeleteSonos(args: string[]): Promise<void> {
 
   const device = config.devices[deviceIndex];
 
-  // Remove device
   config.devices.splice(deviceIndex, 1);
 
-  // Clear default if it was the deleted device
   if (config.defaultDevice === device.ip) {
     config.defaultDevice = undefined;
   }
@@ -2084,10 +1945,8 @@ async function cmdAddMusic(args: string[]): Promise<void> {
     return;
   }
 
-  // Join all args to handle URLs that might have been split
   const input = args.join(" ").trim();
   
-  // Find the URL in the input - look for http:// or https://
   let url = "";
   const httpIndex = input.indexOf("http://");
   const httpsIndex = input.indexOf("https://");
@@ -2097,29 +1956,23 @@ async function cmdAddMusic(args: string[]): Promise<void> {
   } else if (httpIndex !== -1) {
     url = input.substring(httpIndex).trim();
   } else {
-    // If no http/https found, assume the whole input is the URL
     url = input;
   }
   
-  // Clean up URL - remove any trailing spaces or characters that might have been added
-  // But keep the URL intact
-  url = url.split(/\s+/)[0]; // Take only the first "word" after http/https
+  url = url.split(/\s+/)[0];
 
-  // Validate URL
   if (!url.startsWith("http://") && !url.startsWith("https://")) {
     addTUIMessage(`❌ Invalid URL: ${url}`);
     addTUIMessage("URL must start with http:// or https://");
     return;
   }
 
-  // Check if URL already exists
   const existingByUrl = config.musicCatalog.find(m => m.url === url);
   if (existingByUrl) {
     addTUIMessage(`❌ URL already exists as: ${existingByUrl.name}`);
     return;
   }
 
-  // Fetch metadata first to get the name
   addTUIMessage("📥 Fetching video metadata...");
   if (tuiEnabled) renderTUI();
   
@@ -2129,10 +1982,8 @@ async function cmdAddMusic(args: string[]): Promise<void> {
     return;
   }
 
-  // Use title as name, fallback to URL if no title
   const name = metadata.title || url;
 
-  // Check if name already exists (after we have it)
   const existingByName = config.musicCatalog.find(m => m.name.toLowerCase() === name.toLowerCase());
   if (existingByName) {
     addTUIMessage(`❌ "${name}" already exists in catalog`);
@@ -2165,7 +2016,6 @@ async function cmdDeleteMusic(args: string[]): Promise<void> {
 
   const identifier = args[0];
 
-  // Find music by index or name
   let musicIndex = -1;
   const index = parseInt(identifier);
   if (!isNaN(index) && index > 0 && index <= config.musicCatalog.length) {
@@ -2187,23 +2037,19 @@ async function cmdDeleteMusic(args: string[]): Promise<void> {
   if (tuiEnabled) renderTUI();
 }
 
-// ============= Interactive CLI =============
 async function interactiveCLI(): Promise<void> {
-  // Initialize logging
   await initLogging();
   await log("Starting interactive CLI");
   
-  // Start TUI
   await startTUI();
   addTUIMessage("Welcome! Type 'help' for commands.");
 
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
 
-  // Set up signal handler for Ctrl+C
   let signalHandler: (() => void) | null = null;
   const setupSignalHandler = () => {
-    if (signalHandler) return; // Already set up
+    if (signalHandler) return;
     
     signalHandler = () => {
       if (playbackState.isPlaying) {
@@ -2224,13 +2070,10 @@ async function interactiveCLI(): Promise<void> {
 
   setupSignalHandler();
 
-  // Use a persistent reader and decoder to avoid buffer issues
-  // Create a single reader that we reuse to avoid state corruption
   let stdinReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   let inputDecoder = new TextDecoder();
   let inputBuffer = "";
   
-  // Initialize stdin reader once
   const initStdinReader = () => {
     if (!stdinReader) {
       stdinReader = Deno.stdin.readable.getReader();
@@ -2239,33 +2082,14 @@ async function interactiveCLI(): Promise<void> {
   
   initStdinReader();
   
-  // Helper to update just the prompt line without clearing screen
-  function updatePromptLine(prompt: string, input: string, promptX: number, promptY: number, maxWidth?: number): void {
-    moveCursor(promptY, promptX);
-    setColor("bright", "green");
-    const totalWidth = Math.max(0, (maxWidth ?? (TUI_WIDTH - promptX + 1)));
-    const inputRoom = Math.max(0, totalWidth - prompt.length - 1);
-    const displayInput = input.length > inputRoom
-      ? "..." + input.slice(-(Math.max(0, inputRoom - 3)))
-      : input;
-    const padding = " ".repeat(Math.max(0, totalWidth - (prompt.length + displayInput.length)));
-    Deno.stdout.writeSync(new TextEncoder().encode(prompt + displayInput + padding));
-    resetColor();
-    // Move cursor to end of input
-    moveCursor(promptY, promptX + prompt.length + displayInput.length);
-  }
-
   async function readLine(prompt: string = "sonos> ", promptX: number = 1, promptY: number = 23, lineWidth?: number): Promise<string | null> {
-    // Ensure reader is initialized
     if (!stdinReader) {
       initStdinReader();
     }
     
-    // Reset buffer for new line
     inputBuffer = "";
     activePrompt = { prompt, x: promptX, y: promptY, width: lineWidth, input: "" };
     
-    // Show initial prompt
     if (tuiEnabled) {
       updatePromptLine(prompt, "", promptX, promptY, lineWidth);
     }
@@ -2282,11 +2106,10 @@ async function interactiveCLI(): Promise<void> {
         const { done, value } = await stdinReader.read();
         
         if (done) {
-          // Reader closed, try to reinitialize
           try {
             stdinReader.releaseLock();
           } catch {
-            // Already released
+            console.error(`Failed to release reader lock`);
           }
           stdinReader = null;
           initStdinReader();
@@ -2297,11 +2120,9 @@ async function interactiveCLI(): Promise<void> {
           continue;
         }
         
-        // Process bytes to handle backspace and control characters
         for (let i = 0; i < value.length; i++) {
           const byte = value[i];
           
-          // Handle backspace (0x7F or 0x08)
           if (byte === 0x7F || byte === 0x08) {
             if (inputBuffer.length > 0) {
               inputBuffer = inputBuffer.slice(0, -1);
@@ -2313,53 +2134,44 @@ async function interactiveCLI(): Promise<void> {
             continue;
           }
           
-          // Handle Enter/Return (0x0D or 0x0A)
           if (byte === 0x0D || byte === 0x0A) {
             const line = inputBuffer.trim();
             inputBuffer = "";
-            // Clear active prompt state
             activePrompt = null;
-            // Clear prompt line
             if (tuiEnabled) {
               moveCursor(promptY, promptX);
               const totalWidth = Math.max(0, (lineWidth ?? (TUI_WIDTH - promptX + 1)));
               const spaces = Math.max(0, totalWidth - prompt.length);
               Deno.stdout.writeSync(new TextEncoder().encode(prompt + " ".repeat(spaces)));
             }
-            // Reset decoder
             inputDecoder = new TextDecoder();
             return line;
           }
           
-          // Skip other control characters
           if (byte < 0x20 && byte !== 0x09) {
             continue;
           }
           
-          // Add character to buffer
           const char = String.fromCharCode(byte);
           inputBuffer += char;
           if (activePrompt) activePrompt.input = inputBuffer;
           
-          // Update prompt line to show typed characters
           if (tuiEnabled) {
             updatePromptLine(prompt, inputBuffer, promptX, promptY, lineWidth);
           }
         }
         
-        // Limit buffer size to prevent memory issues
         if (inputBuffer.length > 10000) {
           inputBuffer = "";
           inputDecoder = new TextDecoder();
         }
       }
     } catch (e) {
-      // Error reading - try to reinitialize reader
       if (stdinReader) {
         try {
           stdinReader.releaseLock();
         } catch {
-          // Already released
+          console.error(`Failed to release reader lock:`);
         }
       }
       stdinReader = null;
@@ -2371,11 +2183,8 @@ async function interactiveCLI(): Promise<void> {
   }
 
   while (true) {
-    // Render TUI first to show prompt
     if (tuiEnabled) renderTUI();
     
-    // Read a complete line (waits for Enter, handles paste correctly)
-    // Input is accumulated in buffer until Enter is pressed (no TUI updates while typing)
     const input = await readLine("sonos> ");
     if (input === null) break;
     
@@ -2405,10 +2214,19 @@ async function interactiveCLI(): Promise<void> {
         case "help":
         case "h":
         case "?":
+          helpContext = "main";
           currentModal = "help";
           if (tuiEnabled) renderTUI();
-          // Wait for Enter to close modal
-          await readLine();
+          while (true) {
+            const input = await readLine("help> ", PROMPT_X, PROMPT_Y);
+            if (input === null) break;
+            const trimmed = input.trim().toLowerCase();
+            if (!trimmed || trimmed === "q" || trimmed === "quit" || trimmed === "exit") {
+              break;
+            }
+            addTUIMessage("Type q or Enter to close help");
+            if (tuiEnabled) renderTUI();
+          }
           currentModal = null;
           if (tuiEnabled) renderTUI();
           break;
@@ -2426,15 +2244,10 @@ async function interactiveCLI(): Promise<void> {
           currentModal = "devices";
           if (tuiEnabled) renderTUI();
           
-          // Interactive loop for device management
           const deviceManagementLoop = async () => {
             while (currentModal === "devices") {
               if (tuiEnabled) renderTUI();
-              // Calculate prompt position to match modal content area (inside border)
-              const promptX = 5 + 2; // modalX + 2
-              const promptY = 2 + 23 - 2; // modalY + modalH - 2
-              const lineWidth = 70 - 4; // modalW - 4 (inside borders and padding)
-              const input = await readLine("devices> ", promptX, promptY, lineWidth);
+              const input = await readLine("devices> ", PROMPT_X, PROMPT_Y);
               if (input === null) break;
               
               if (!input) {
@@ -2446,6 +2259,44 @@ async function interactiveCLI(): Promise<void> {
 
               try {
                 switch (cmd.toLowerCase()) {
+                  case "help":
+                  case "h":
+                  case "?":
+                    helpContext = "music";
+                    currentModal = "help";
+                    if (tuiEnabled) renderTUI();
+                    while (true) {
+                      const hInput = await readLine("help> ", PROMPT_X, PROMPT_Y);
+                      if (hInput === null) break;
+                      const trimmed = hInput.trim().toLowerCase();
+                      if (!trimmed || trimmed === "q" || trimmed === "quit" || trimmed === "exit") {
+                        break;
+                      }
+                      addTUIMessage("Type q or Enter to close help");
+                      if (tuiEnabled) renderTUI();
+                    }
+                    currentModal = "music";
+                    if (tuiEnabled) renderTUI();
+                    break;
+                  case "help":
+                  case "h":
+                  case "?":
+                    helpContext = "devices";
+                    currentModal = "help";
+                    if (tuiEnabled) renderTUI();
+                    while (true) {
+                      const hInput = await readLine("help> ", PROMPT_X, PROMPT_Y);
+                      if (hInput === null) break;
+                      const trimmed = hInput.trim().toLowerCase();
+                      if (!trimmed || trimmed === "q" || trimmed === "quit" || trimmed === "exit") {
+                        break;
+                      }
+                      addTUIMessage("Type q or Enter to close help");
+                      if (tuiEnabled) renderTUI();
+                    }
+                    currentModal = "devices";
+                    if (tuiEnabled) renderTUI();
+                    break;
                   case "done":
                   case "exit":
                   case "close":
@@ -2524,7 +2375,6 @@ async function interactiveCLI(): Promise<void> {
           currentModal = "status";
           await cmdStatus();
           if (tuiEnabled) renderTUI();
-          // Wait for Enter to close modal
           await readLine();
           currentModal = null;
           if (tuiEnabled) renderTUI();
@@ -2536,11 +2386,9 @@ async function interactiveCLI(): Promise<void> {
           currentModal = "music";
           if (tuiEnabled) renderTUI();
           
-          // Interactive loop for music management
           const musicManagementLoop = async () => {
             while (currentModal === "music") {
               if (tuiEnabled) renderTUI();
-              // Read input without updating TUI during typing (prevents freezes)
               const input = await readLine("music> ", 7, 21);
               if (input === null) break;
               
@@ -2595,10 +2443,9 @@ async function interactiveCLI(): Promise<void> {
                     }
                     const music = config.musicCatalog[musicIndex];
                     
-                    // Build play args: [url, device] if device specified
                     const playArgs = [music.url];
                     if (cmdArgs.length > 1) {
-                      playArgs.push(cmdArgs[1]); // Device index or IP
+                      playArgs.push(cmdArgs[1]);
                     }
                     
                     await cmdPlay(playArgs);
@@ -2628,10 +2475,9 @@ async function interactiveCLI(): Promise<void> {
                       break;
                     }
                     
-                    // Build next args: [index|name, device] if device specified
                     const nextArgs = [nextIdentifier];
                     if (cmdArgs.length > 1) {
-                      nextArgs.push(cmdArgs[1]); // Device index or IP
+                      nextArgs.push(cmdArgs[1]);
                     }
                     
                     await cmdNext(nextArgs);
@@ -2760,47 +2606,57 @@ let currentModal: TUIView | null = null;
 const MAX_MESSAGES = 3;
 const TUI_WIDTH = 80;
 const TUI_HEIGHT = 24;
+const PROMPT_X = 1;
+const PROMPT_Y = TUI_HEIGHT - 1;
 let lastRenderTime = 0;
 let renderScheduled = false;
 let activePrompt: { prompt: string; x: number; y: number; width?: number; input: string } | null = null;
+let rawModeEnabled = false;
+type HelpContext = "main" | "devices" | "music" | "status";
+let helpContext: HelpContext = "main";
 
 function clearScreen(): void {
-  // Use home position first, then clear to prevent buffer issues
   Deno.stdout.writeSync(new TextEncoder().encode("\x1b[H\x1b[2J"));
 }
 
-// Terminal control helpers for stable rendering (reduced flicker)
 function writeAnsi(s: string): void {
   Deno.stdout.writeSync(new TextEncoder().encode(s));
 }
 
 function enterAltScreen(): void {
-  // Switch to alternate screen buffer and hide cursor
   writeAnsi("\x1b[?1049h\x1b[?25l");
 }
 
 function exitAltScreen(): void {
-  // Return to normal buffer and show cursor
   writeAnsi("\x1b[?1049l\x1b[?25h");
 }
 
 function enableRawMode(): void {
+  if (rawModeEnabled) return;
   try {
-    // Enable raw mode for smoother input handling
-    // Safe to call multiple times
-    // deno-lint-ignore no-explicit-any
-    (Deno as any).setRaw?.(Deno.stdin.rid, true);
+    if (typeof Deno.setRaw === "function") {
+      Deno.setRaw(Deno.stdin.rid, true);
+    } else if (typeof (Deno.stdin as unknown as { setRaw?: (mode: boolean) => void }).setRaw === "function") {
+      (Deno.stdin as unknown as { setRaw: (mode: boolean) => void }).setRaw(true);
+    }
+    rawModeEnabled = true;
   } catch {
-    // Raw mode not available in this environment; ignore
+    rawModeEnabled = false;
   }
 }
 
 function disableRawMode(): void {
+  if (!rawModeEnabled) return;
   try {
-    // deno-lint-ignore no-explicit-any
-    (Deno as any).setRaw?.(Deno.stdin.rid, false);
+    if (typeof Deno.setRaw === "function") {
+      Deno.setRaw(Deno.stdin.rid, false);
+    } else if (typeof (Deno.stdin as unknown as { setRaw?: (mode: boolean) => void }).setRaw === "function") {
+      (Deno.stdin as unknown as { setRaw: (mode: boolean) => void }).setRaw(false);
+    }
   } catch {
-    // Ignore if not supported
+    // ignore
+  } finally {
+    rawModeEnabled = false;
   }
 }
 
@@ -2833,6 +2689,36 @@ function setColor(fg?: string, bg?: string): void {
 
 function resetColor(): void {
   Deno.stdout.writeSync(new TextEncoder().encode("\x1b[0m"));
+}
+
+function updatePromptLine(
+  prompt: string,
+  input: string,
+  promptX: number,
+  promptY: number,
+  maxWidth?: number,
+): void {
+  const totalWidth = Math.max(0, (maxWidth ?? (TUI_WIDTH - promptX + 1)));
+
+  const promptText = prompt.length > totalWidth ? prompt.slice(0, totalWidth) : prompt;
+  const inputRoom = Math.max(0, totalWidth - promptText.length);
+
+  const displayInput =
+    input.length > inputRoom ? input.slice(input.length - inputRoom) : input;
+
+  moveCursor(promptY, promptX);
+  setColor("bright", "green");
+  Deno.stdout.writeSync(new TextEncoder().encode(promptText));
+  resetColor();
+
+  setColor("white");
+  Deno.stdout.writeSync(new TextEncoder().encode(displayInput));
+
+  const padding = " ".repeat(Math.max(0, inputRoom - displayInput.length));
+  Deno.stdout.writeSync(new TextEncoder().encode(padding));
+  resetColor();
+
+  moveCursor(promptY, promptX + promptText.length + displayInput.length);
 }
 
 function truncate(str: string, maxLen: number): string {
@@ -2879,123 +2765,79 @@ function addTUIMessage(message: string): void {
 }
 
 function renderHelpModal(): void {
-  const modalX = 5;
-  const modalY = 1;
-  const modalW = 80;
-  const modalH = 26;
-  
-  // Draw modal border with enhanced styling
-  drawBox(modalX, modalY, modalW, modalH, " 📚 Help - Commands ");
-  
+  const modalW = 60;
+  const modalH = 14;
+  const modalX = Math.max(2, Math.floor((TUI_WIDTH - modalW) / 2));
+  const modalY = 4;
+
+  const titleByContext: Record<HelpContext, string> = {
+    main: "Main Commands",
+    devices: "Devices Commands",
+    music: "Music Commands",
+    status: "Status Commands",
+  };
+
+  const commandsByContext: Record<HelpContext, { cmd: string; desc: string }[]> = {
+    main: [
+      { cmd: "help", desc: "Show this help" },
+      { cmd: "list", desc: "Manage saved devices" },
+      { cmd: "music", desc: "Manage music catalog" },
+      { cmd: "scan [--verbose]", desc: "Scan for Sonos devices" },
+      { cmd: "play <URL> [dev]", desc: "Play YouTube URL" },
+      { cmd: "pause | resume | stop", desc: "Control playback" },
+      { cmd: "status", desc: "Show system status" },
+      { cmd: "exit | quit", desc: "Exit application" },
+    ],
+    devices: [
+      { cmd: "add <name> <ip>", desc: "Add new device" },
+      { cmd: "edit <n> <name>", desc: "Change name only" },
+      { cmd: "edit <n> <ip>", desc: "Change IP only" },
+      { cmd: "edit <n> <name> <ip>", desc: "Change both" },
+      { cmd: "delete <n>", desc: "Delete device #n" },
+      { cmd: "set-default <n>", desc: "Set device #n as default" },
+      { cmd: "done | exit | q", desc: "Close devices modal" },
+    ],
+    music: [
+      { cmd: "add <url>", desc: "Add YouTube URL to catalog" },
+      { cmd: "delete <n>", desc: "Delete track #n" },
+      { cmd: "play <n> [dev]", desc: "Play track #n [on device]" },
+      { cmd: "next <n> [dev]", desc: "Queue track #n [on device]" },
+      { cmd: "done | exit | q", desc: "Close music modal" },
+    ],
+    status: [
+      { cmd: "status", desc: "Refresh status view" },
+      { cmd: "Enter / q", desc: "Close status modal" },
+    ],
+  };
+
+  const title = ` 📚 Help - ${titleByContext[helpContext]} `;
+  const commands = commandsByContext[helpContext];
+
+  drawBox(modalX, modalY, modalW, modalH, title);
+
   let yPos = modalY + 2;
-  
-  // Category: Discovery & Devices
-  setColor("bright", "cyan");
-  writeAt(modalX + 2, yPos, "🔍 Discovery & Devices");
-  resetColor();
-  yPos++;
-  writeAt(modalX + 2, yPos, "─".repeat(modalW - 4));
-  yPos++;
-  
-  const discoveryCommands = [
-    { cmd: "scan [--verbose]", desc: "Scan network for Sonos devices" },
-    { cmd: "list, ls, devices", desc: "Manage saved devices (opens modal)" },
-    { cmd: "set-default <n>", desc: "Set default device by number or IP" },
-  ];
-  
-  for (const { cmd, desc } of discoveryCommands) {
-    setColor("bright", "white");
-    writeAt(modalX + 4, yPos, truncate(cmd, 30));
-    resetColor();
-    setColor("dim", "white");
-    writeAt(modalX + 36, yPos, truncate(desc, 42));
-    resetColor();
-    yPos++;
-  }
-  
-  yPos += 2;
-  
-  // Category: Playback
-  setColor("bright", "cyan");
-  writeAt(modalX + 2, yPos, "🎵 Playback");
-  resetColor();
-  yPos++;
-  writeAt(modalX + 2, yPos, "─".repeat(modalW - 4));
-  yPos++;
-  
-  const playbackCommands = [
-    { cmd: "play <URL> [dev]", desc: "Play YouTube URL (optional device)" },
-    { cmd: "next <URL|n> [dev]", desc: "Queue song (URL or music lib entry)" },
-    { cmd: "pause", desc: "Pause current playback" },
-    { cmd: "resume, res", desc: "Resume from last position" },
-    { cmd: "stop, s", desc: "Stop playback" },
-  ];
-  
-  for (const { cmd, desc } of playbackCommands) {
-    setColor("bright", "white");
-    writeAt(modalX + 4, yPos, truncate(cmd, 30));
-    resetColor();
-    setColor("dim", "white");
-    writeAt(modalX + 36, yPos, truncate(desc, 42));
-    resetColor();
-    yPos++;
-  }
-  
-  yPos += 2;
-  
-  // Category: Music Catalog
-  setColor("bright", "cyan");
-  writeAt(modalX + 2, yPos, "📻 Music Catalog");
-  resetColor();
-  yPos++;
-  writeAt(modalX + 2, yPos, "─".repeat(modalW - 4));
-  yPos++;
-  
-  setColor("bright", "white");
-  writeAt(modalX + 4, yPos, truncate("music, catalog", 30));
-  resetColor();
-  setColor("dim", "white");
-  writeAt(modalX + 36, yPos, truncate("Manage saved music (opens modal)", 42));
-  resetColor();
-  yPos++;
-  
-  yPos += 2;
-  
-  // Category: System
-  setColor("bright", "cyan");
-  writeAt(modalX + 2, yPos, "⚙️  System");
-  resetColor();
-  yPos++;
-  writeAt(modalX + 2, yPos, "─".repeat(modalW - 4));
-  yPos++;
-  
-  const systemCommands = [
-    { cmd: "status", desc: "Show detailed status" },
-    { cmd: "clear", desc: "Clear message history" },
-    { cmd: "help, h, ?", desc: "Show this help" },
-    { cmd: "exit, quit, q", desc: "Exit application" },
-  ];
-  
-  for (const { cmd, desc } of systemCommands) {
-    setColor("bright", "white");
-    writeAt(modalX + 4, yPos, truncate(cmd, 30));
-    resetColor();
-    setColor("dim", "white");
-    writeAt(modalX + 36, yPos, truncate(desc, 42));
-    resetColor();
-    yPos++;
-  }
-  
-  // Footer
-  yPos = modalY + modalH - 3;
-  writeAt(modalX + 2, yPos, "─".repeat(modalW - 4));
-  yPos++;
+
   setColor("dim", "yellow");
-  writeAt(modalX + 2, yPos, "💡 Quick start: scan → set-default 1 → play <URL>");
-  yPos++;
-  setColor("dim", "white");
-  writeAt(modalX + 2, yPos, "Press Enter to close...");
+  writeAt(modalX + 2, yPos, "Type q or press Enter to close");
   resetColor();
+  yPos += 2;
+
+  setColor("bright", "cyan");
+  writeAt(modalX + 2, yPos, "Commands");
+  resetColor();
+  yPos++;
+  writeAt(modalX + 2, yPos, "─".repeat(modalW - 4));
+  yPos++;
+
+  for (const { cmd, desc } of commands) {
+    setColor("bright", "white");
+    writeAt(modalX + 2, yPos, truncate(cmd, 22));
+    resetColor();
+    setColor("dim", "white");
+    writeAt(modalX + 26, yPos, truncate(desc, modalW - 30));
+    resetColor();
+    yPos++;
+  }
 }
 
 function renderDevicesModal(): void {
@@ -3004,11 +2846,9 @@ function renderDevicesModal(): void {
   const modalW = 70;
   const modalH = 23;
   
-  // Draw modal border
   const deviceCount = config.devices.length;
   drawBox(modalX, modalY, modalW, modalH, ` 📡 Devices (${deviceCount}) `);
   
-  // Table header with better styling
   const headerY = modalY + 2;
   setColor("bright", "cyan");
   writeAt(modalX + 2, headerY, "#");
@@ -3018,14 +2858,10 @@ function renderDevicesModal(): void {
   writeAt(modalX + 55, headerY, "Model");
   resetColor();
   
-  // Separator line
   setColor("dim", "white");
   writeAt(modalX + 2, headerY + 1, "─".repeat(modalW - 4));
   resetColor();
   
-  // Table rows
-  // Calculate max devices to show: ensure commands section (starting at cmdY) has room
-  // cmdY = modalY + modalH - 10, headerY = modalY + 2, so max rows = cmdY - headerY - 2
   const maxDeviceRows = (modalY + modalH - 10) - (modalY + 2) - 2;
   let yPos = headerY + 2;
   if (config.devices.length === 0) {
@@ -3037,12 +2873,10 @@ function renderDevicesModal(): void {
       const d = config.devices[i];
       const isDefault = d.ip === config.defaultDevice;
       
-      // Row number with highlight
       setColor(isDefault ? "bright" : "dim", "white");
       writeAt(modalX + 2, yPos, `${(i + 1).toString().padStart(2)}`);
       resetColor();
       
-      // Name (with default indicator)
       if (isDefault) {
         setColor("bright", "yellow");
         writeAt(modalX + 5, yPos, truncate("⭐ " + d.name, 18));
@@ -3052,17 +2886,14 @@ function renderDevicesModal(): void {
       }
       resetColor();
       
-      // IP
       setColor("white");
       writeAt(modalX + 25, yPos, truncate(d.ip, 13));
       resetColor();
       
-      // Room
       setColor("dim", "white");
       writeAt(modalX + 40, yPos, truncate(d.room, 13));
       resetColor();
       
-      // Model
       setColor("dim", "white");
       writeAt(modalX + 55, yPos, truncate(d.model, 12));
       resetColor();
@@ -3071,25 +2902,10 @@ function renderDevicesModal(): void {
     }
   }
   
-  // Commands section - Better organized with two columns
-  const cmdY = modalY + modalH - 10;
-  setColor("bright", "yellow");
-  writeAt(modalX + 2, cmdY, "💡 Commands:");
+  const hintY = modalY + modalH - 2;
+  setColor("dim", "yellow");
+  writeAt(modalX + 2, hintY, "💡 Type 'help' for device commands");
   resetColor();
-  
-  setColor("dim", "white");
-  // Left column
-  writeAt(modalX + 2, cmdY + 1, "  add <name> <ip>        - Add new device");
-  writeAt(modalX + 2, cmdY + 2, "  edit <n> <name>         - Change name only");
-  writeAt(modalX + 2, cmdY + 3, "  edit <n> <ip>           - Change IP only");
-  writeAt(modalX + 2, cmdY + 4, "  edit <n> <name> <ip>     - Change both");
-  writeAt(modalX + 2, cmdY + 5, "  delete <n>              - Delete device #n");
-  writeAt(modalX + 2, cmdY + 6, "  set-default <n>        - Set device #n as default");
-  // Right column
-  writeAt(modalX + 40, cmdY + 1, "  done/exit/q           - Close modal");
-  resetColor();
-  
-  // Note: Prompt is rendered by readLine function, not here
 }
 
 function renderMusicModal(): void {
@@ -3098,11 +2914,9 @@ function renderMusicModal(): void {
   const modalW = 70;
   const modalH = 20;
   
-  // Draw modal border
   const trackCount = config.musicCatalog.length;
   drawBox(modalX, modalY, modalW, modalH, ` 📻 Music Catalog (${trackCount} tracks) `);
   
-  // Table header with better styling
   const headerY = modalY + 2;
   setColor("bright", "cyan");
   writeAt(modalX + 2, headerY, "#");
@@ -3111,12 +2925,10 @@ function renderMusicModal(): void {
   writeAt(modalX + 50, headerY, "Artist");
   resetColor();
   
-  // Separator line
   setColor("dim", "white");
   writeAt(modalX + 2, headerY + 1, "─".repeat(modalW - 4));
   resetColor();
   
-  // Table rows
   let yPos = headerY + 2;
   if (config.musicCatalog.length === 0) {
     setColor("dim", "yellow");
@@ -3126,22 +2938,18 @@ function renderMusicModal(): void {
     for (let i = 0; i < Math.min(config.musicCatalog.length, 12); i++) {
       const m = config.musicCatalog[i];
       
-      // Row number
       setColor("dim", "white");
       writeAt(modalX + 2, yPos, `${(i + 1).toString().padStart(2)}`);
       resetColor();
       
-      // Name
       setColor("bright", "white");
       writeAt(modalX + 5, yPos, truncate(m.name, 18));
       resetColor();
       
-      // Title (from metadata if available)
       setColor("white");
       writeAt(modalX + 25, yPos, truncate(m.title || "-", 23));
       resetColor();
       
-      // Artist
       setColor("dim", "white");
       writeAt(modalX + 50, yPos, truncate(m.artist || "-", 17));
       resetColor();
@@ -3150,23 +2958,9 @@ function renderMusicModal(): void {
     }
   }
   
-  // Commands section - Better organized
-  const cmdY = modalY + modalH - 6;
-  setColor("bright", "yellow");
-  writeAt(modalX + 2, cmdY, "💡 Commands:");
-  resetColor();
-  
-  setColor("dim", "white");
-  writeAt(modalX + 2, cmdY + 1, "  add <url>            - Add YouTube URL to catalog");
-  writeAt(modalX + 2, cmdY + 2, "  delete <n>            - Delete track #n from catalog");
-  writeAt(modalX + 2, cmdY + 3, "  play <n> [dev]        - Play track #n [on device]");
-  writeAt(modalX + 2, cmdY + 4, "  next <n> [dev]        - Queue track #n [on device]");
-  writeAt(modalX + 40, cmdY + 1, "  done/exit/q         - Close modal");
-  resetColor();
-  
-  // Prompt (input will be shown by readLine function)
-  setColor("bright", "green");
-  writeAt(modalX + 2, modalY + modalH - 1, "music> ");
+  const hintY = modalY + modalH - 2;
+  setColor("dim", "yellow");
+  writeAt(modalX + 2, hintY, "💡 Type 'help' for music commands");
   resetColor();
 }
 
@@ -3176,7 +2970,6 @@ function renderStatusModal(): void {
   const modalW = 64;
   const modalH = 20;
   
-  // Draw modal border
   drawBox(modalX, modalY, modalW, modalH, " System Status ");
   
   let yPos = modalY + 2;
@@ -3249,17 +3042,15 @@ function renderProgressBar(current: number, total: number, width: number): strin
 
 function renderMainView(): void {
   clearScreen();
-  
-  // Improved layout with better spacing
+
   const headerY = 1;
   const nowPlayingY = 3;
-  const deviceY = 10;      // add vertical breathing room
-  const statusY = 15;      // add vertical breathing room
-  const messagesY = 19;    // add vertical breathing room
-  const shortcutsY = 22;
-  const promptY = 23;
+  const deviceY = 10;
+  const statusY = 15;
+  const messagesY = 19;
+  const shortcutsY = PROMPT_Y - 1;
+  const promptY = PROMPT_Y;
   
-  // Header with gradient effect
   setColor("bright", "cyan");
   writeAt(1, headerY, "╔" + "═".repeat(TUI_WIDTH - 2) + "╗");
   resetColor();
@@ -3272,21 +3063,17 @@ function renderMainView(): void {
   writeAt(1, headerY + 2, "╚" + "═".repeat(TUI_WIDTH - 2) + "╝");
   resetColor();
   
-  // Now Playing Box - Enhanced (extra inner space)
   drawBox(1, nowPlayingY, TUI_WIDTH, 6, " ▶ Now Playing ");
   const trackY = nowPlayingY + 1;
   if (playbackState.isPlaying && playbackState.currentMetadata) {
     const meta = playbackState.currentMetadata;
     
-    // Title with icon
     setColor("bright", "white");
     const statusIcon = playbackState.isPaused ? "⏸️ " : "▶️ ";
     writeAt(3, trackY, statusIcon + truncate(meta.title, TUI_WIDTH - 8));
     resetColor();
     
-    // Artist intentionally omitted for cleaner UI
     
-    // Progress bar and time
     if (meta.duration > 0 && playbackState.lastPosition !== undefined) {
       const position = playbackState.lastPosition;
       const progressWidth = TUI_WIDTH - 10;
@@ -3296,7 +3083,6 @@ function renderMainView(): void {
       writeAt(3, trackY + 2, progressBar);
       resetColor();
       
-      // Time display
       setColor("bright", "yellow");
       const timeStr = `${formatDuration(position)} / ${formatDuration(meta.duration)}`;
       writeAt(3, trackY + 3, timeStr);
@@ -3314,7 +3100,6 @@ function renderMainView(): void {
     resetColor();
   }
   
-  // Device Box - Compact (extra inner space)
   drawBox(1, deviceY, TUI_WIDTH, 4, " 📡 Device ");
   const deviceInfoY = deviceY + 1;
   if (playbackState.currentDevice) {
@@ -3322,7 +3107,6 @@ function renderMainView(): void {
     setColor("bright", "white");
     writeAt(3, deviceInfoY, `🎯 ${truncate(dev.name, TUI_WIDTH - 8)}`);
     resetColor();
-    // Keep UI minimal: do not show IP/model here
     if (dev.room) {
       setColor("dim", "white");
       writeAt(3, deviceInfoY + 1, `   ${dev.room}`);
@@ -3350,11 +3134,9 @@ function renderMainView(): void {
     resetColor();
   }
   
-  // Status Box - Enhanced (minimal, extra inner space)
   drawBox(1, statusY, TUI_WIDTH, 4, " 📊 Status ");
   const statusInfoY = statusY + 1;
   
-  // Status indicator with color
   let statusIcon = "○";
   let statusText = "Stopped";
   let statusColor: string = "dim";
@@ -3372,9 +3154,7 @@ function renderMainView(): void {
   writeAt(3, statusInfoY, `${statusIcon} ${statusText}`);
   resetColor();
   
-  // Removed device counts and last scan to reduce clutter
   
-  // Messages Box - Enhanced (extra inner space)
   drawBox(1, messagesY, TUI_WIDTH, 3, " 💬 Messages ");
   const msgY = messagesY + 1;
   if (tuiMessages.length > 0) {
@@ -3387,19 +3167,29 @@ function renderMainView(): void {
     resetColor();
   }
   
-  // Keyboard shortcuts hint - only show when no modal is active
   if (!currentModal) {
     setColor("dim", "white");
     writeAt(1, shortcutsY, "💡 Quick: help | list | music | play <URL> | pause | resume | stop");
     resetColor();
-    
-    // Command prompt - Enhanced
-    setColor("bright", "green");
-    writeAt(1, promptY, "sonos> ");
-    resetColor();
+  } else {
+    writeAt(1, shortcutsY, " ".repeat(TUI_WIDTH - 1));
   }
   
-  // Render modal if active
+  const promptState = activePrompt ?? {
+    prompt: "sonos> ",
+    x: PROMPT_X,
+    y: promptY,
+    width: TUI_WIDTH - (PROMPT_X - 1),
+    input: "",
+  };
+  updatePromptLine(
+    promptState.prompt,
+    promptState.input,
+    promptState.x,
+    promptState.y,
+    promptState.width,
+  );
+  
   if (currentModal === "help") {
     renderHelpModal();
   } else if (currentModal === "devices") {
@@ -3438,8 +3228,6 @@ async function startTUI(): Promise<void> {
   clearScreen();
   renderTUI();
   
-  // Note: TUI will be updated manually when state changes
-  // No continuous update loop to avoid interfering with input
 }
 
 function stopTUI(): void {
@@ -3471,11 +3259,11 @@ async function chooseAvailablePort(start: number, end: number): Promise<number> 
       const listener = Deno.listen({ hostname: "0.0.0.0", port: p });
       listener.close();
       return p;
-    } catch {
-      // Port in use, try next
+    } catch (e) {
+      console.log(`Port ${p} in use, trying next`);
     }
   }
-  return 0; // Let OS choose
+  return 0;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -3483,16 +3271,14 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function findCommandPath(command: string): Promise<string> {
-  // First try the command as-is
   try {
     const cmd = new Deno.Command(command, { args: ["--version"], stdout: "null", stderr: "null" });
     const status = await cmd.output();
     if (status.success) return command;
   } catch {
-    // Command not found in PATH
+    console.log(`Command ${command} not found in PATH`);
   }
   
-  // On macOS, try common locations
   const paths = [
     `/opt/homebrew/bin/${command}`,
     `/usr/local/bin/${command}`,
@@ -3506,11 +3292,10 @@ async function findCommandPath(command: string): Promise<string> {
         return path;
       }
     } catch {
-      // Path doesn't exist
+      console.log(`Path ${path} doesn't exist`);
     }
   }
   
-  // Fallback to command name (will likely fail but preserves original behavior)
   return command;
 }
 
@@ -3520,12 +3305,11 @@ async function checkDependencies(): Promise<boolean> {
 
   for (const dep of deps) {
     try {
-      // Try to find the command in PATH
       const cmd = new Deno.Command(dep, { args: ["--version"], stdout: "null", stderr: "null" });
       const status = await cmd.output();
       if (!status.success) throw new Error("Command failed");
     } catch {
-      // On macOS, try common Homebrew locations
+      console.log(`Command ${dep} not found in PATH`);
       const brewPaths = [
         `/opt/homebrew/bin/${dep}`,
         `/usr/local/bin/${dep}`,
@@ -3541,7 +3325,7 @@ async function checkDependencies(): Promise<boolean> {
             break;
           }
         } catch {
-          // Path doesn't exist, continue
+          console.log(`Path ${path} doesn't exist`);
         }
       }
       
@@ -3574,7 +3358,6 @@ async function main() {
   const args = parse(Deno.args);
   const positional = args._ as string[];
 
-  // Handle direct commands
   if (positional.length > 0) {
     const cmd = positional[0].toString();
     
@@ -3602,7 +3385,6 @@ async function main() {
         break;
       
       default:
-        // Check if it's a URL (backward compatibility)
         if (cmd.startsWith("http")) {
           await cmdPlay(positional.map(String));
         } else {
@@ -3611,7 +3393,6 @@ async function main() {
         }
     }
   } else {
-    // No arguments - start interactive CLI
     await interactiveCLI();
   }
 }
@@ -3643,7 +3424,6 @@ Backward compatible:
 `);
 }
 
-// Run main
 if (import.meta.main) {
   try {
     await main();
