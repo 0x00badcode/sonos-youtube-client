@@ -20,7 +20,7 @@ A command-line interface for playing YouTube videos on your Sonos speakers.
 
 1. Clone this repository:
 ```bash
-git clone <your-repo-url>
+git clone <the-repo-url>
 cd sonosyoutubeplay
 ```
 
@@ -142,11 +142,7 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 - Verify your Sonos device is reachable: `ping <device-ip>`
 - Try specifying the device explicitly: `play <url> <device-ip>`
 
-## License
-
-[Add your license here]
-
 ## Contributing
 
-[Add contribution guidelines if needed]
+Feel free to open PRs or issues if something is not working / you wanna add some stuff.
 
