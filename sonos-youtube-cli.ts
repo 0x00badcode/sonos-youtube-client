@@ -89,7 +89,9 @@ async function log(message: string): Promise<void> {
     try {
       const encoder = new TextEncoder();
       await logFile.write(encoder.encode(logMessage));
-      await logFile.flush();
+      if (typeof logFile.sync === "function") {
+        await logFile.sync();
+      }
     } catch (e) {
       console.error(`Failed to write to log file: ${e}`);
     }
@@ -805,13 +807,13 @@ async function handleLiveStream(req: Request, ytUrl: string): Promise<Response> 
       if (reader) {
         try {
           await reader.cancel();
-        } catch {
-          console.error(`Failed to cancel reader: ${e}`);
+        } catch (err) {
+          console.error(`Failed to cancel reader: ${err}`);
         }
         try {
           reader.releaseLock();
-        } catch {
-            console.error(`Failed to release reader lock: ${e}`);
+        } catch (err) {
+            console.error(`Failed to release reader lock: ${err}`);
         }
         reader = null;
       }
@@ -821,8 +823,8 @@ async function handleLiveStream(req: Request, ytUrl: string): Promise<Response> 
         try {
           proc.kill("SIGKILL");
           await proc.status().catch(() => {});
-        } catch {
-          console.error(`Failed to kill process: ${e}`);
+        } catch (err) {
+          console.error(`Failed to kill process: ${err}`);
         }
       };
 
@@ -849,8 +851,8 @@ async function handleLiveStream(req: Request, ytUrl: string): Promise<Response> 
             if (value && !controllerClosed) {
               try {
                 controller.enqueue(value);
-              } catch {
-                console.error(`Failed to enqueue value: ${e}`);
+              } catch (err) {
+                console.error(`Failed to enqueue value: ${err}`);
                 break;
               }
             }
@@ -865,8 +867,8 @@ async function handleLiveStream(req: Request, ytUrl: string): Promise<Response> 
           if (!controllerClosed) {
             try {
               controller.close();
-            } catch {
-              console.error(`Failed to close controller: ${e}`);
+            } catch (err) {
+              console.error(`Failed to close controller: ${err}`);
             }
             controllerClosed = true;
           }

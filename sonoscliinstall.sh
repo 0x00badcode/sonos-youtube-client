@@ -77,6 +77,8 @@ echo "(Using --no-check to skip TypeScript checking)"
 OUTPUT_NAME="${1:-sonos-cli}"
 
 deno compile \
+    --no-npm \
+    --unstable \
     --no-check \
     --allow-net \
     --allow-run \
