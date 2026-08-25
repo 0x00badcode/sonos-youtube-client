@@ -1,0 +1,3 @@
+#!/bin/sh
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+exec "$ROOT/sonos-cli.app/Contents/MacOS/sonos-cli" "$@"

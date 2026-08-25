@@ -48,9 +48,11 @@ interface PlaybackState {
   currentMetadata?: VideoMetadata;
   currentDevice?: SonosDevice;
   serverController?: AbortController;
-  server?: Promise<void>;
+  server?: { shutdown(): Promise<void> };
   streamActive?: boolean;
   activeProcesses?: { ytdlp?: Deno.ChildProcess; ffmpeg?: Deno.ChildProcess; downloader?: Deno.ChildProcess };
+  streamListeners?: Set<(chunk: Uint8Array) => void>;
+  streamPreroll?: Uint8Array[];
   lastPosition?: number;
   positionUpdateInterval?: number;
   cachedFilePath?: string;
@@ -393,6 +395,27 @@ async function verifyDevice(ip: string): Promise<boolean> {
   }
 }
 
+function isHostUnreachable(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return /No route to host|os error 65|EHOSTUNREACH|Failed to connect/i.test(msg);
+}
+
+function unreachableHint(ip?: string): string {
+  const where = ip ? ` at ${ip}:1400` : "";
+  return `Cannot reach Sonos${where} (macOS blocked LAN). Run ./sonos-cli from Terminal.app (not Cursor), click Allow on Local Network. Or System Settings → Privacy & Security → Local Network → enable Cursor.`;
+}
+
+async function pickReachableIp(preferred?: string): Promise<{ ip: string; fallback: boolean } | null> {
+  const candidates: string[] = [];
+  for (const ip of [preferred, ...config.devices.map((d) => d.ip)]) {
+    if (ip && !candidates.includes(ip)) candidates.push(ip);
+  }
+  for (const ip of candidates) {
+    if (await verifyDevice(ip)) return { ip, fallback: ip !== preferred };
+  }
+  return null;
+}
+
 async function fetchDeviceInfo(ip: string): Promise<SonosDevice> {
   const device: SonosDevice = {
     ip,
@@ -600,20 +623,84 @@ async function addURIToQueue(ip: string, uri: string, metadata: string = ""): Pr
   await soap(ip, "/MediaRenderer/AVTransport/Control", "AVTransport", "AddURIToQueue", body);
 }
 
+async function killChild(proc?: Deno.ChildProcess): Promise<void> {
+  if (!proc) return;
+  try {
+    proc.kill("SIGKILL");
+  } catch {
+    // already exited
+  }
+  try {
+    await proc.status;
+  } catch {
+    // ignore
+  }
+}
+
+function ytdlpStreamArgs(ytUrl: string): string[] {
+  // android avoids SABR/403 on default+tv clients (yt-dlp 2025.12 still works this way)
+  return [
+    "--no-update",
+    "--no-playlist",
+    "-f", "bestaudio/best",
+    "--extractor-args", "youtube:player_client=android",
+    "-o", "-",
+    ytUrl,
+  ];
+}
+
+function isToolFatal(line: string): boolean {
+  const t = line.trim();
+  return /^ERROR:/i.test(t) || /Error opening input/i.test(t) || /unable to download video data/i.test(t);
+}
+
+async function logProcessStderr(
+  name: string,
+  stream: ReadableStream<Uint8Array> | null,
+  onFatal?: (msg: string) => void,
+): Promise<void> {
+  if (!stream) return;
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop() || "";
+      for (const line of lines) {
+        const t = line.trim();
+        if (!t) continue;
+        await log(`${name}: ${t}`);
+        if (onFatal && isToolFatal(t)) onFatal(t.replace(/^ERROR:\s*/i, ""));
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+
 async function soap(ip: string, path: string, service: string, action: string, xml: string) {
   const url = `http://${ip}:1400${path}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": 'text/xml; charset="utf-8"',
-      "SOAPACTION": `"urn:schemas-upnp-org:service:${service}:1#${action}"`,
-    },
-    body: xml,
-  });
-  
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`SOAP ${action} failed: ${res.status} ${res.statusText}\n${txt}`);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": 'text/xml; charset="utf-8"',
+        "SOAPACTION": `"urn:schemas-upnp-org:service:${service}:1#${action}"`,
+      },
+      body: xml,
+    });
+
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      throw new Error(`SOAP ${action} failed: ${res.status} ${res.statusText}\n${txt}`);
+    }
+  } catch (e) {
+    if (isHostUnreachable(e)) throw new Error(unreachableHint(ip));
+    throw e;
   }
 }
 
@@ -646,7 +733,7 @@ async function startBackgroundDownload(ytUrl: string): Promise<void> {
     const ffmpegPath = await findCommandPath("ffmpeg");
 
     const ytdlp = new Deno.Command(ytdlpPath, {
-      args: ["-f", "bestaudio/best", "-o", "-", ytUrl],
+      args: ytdlpStreamArgs(ytUrl),
       stdout: "piped",
       stderr: "null",
     }).spawn();
@@ -655,6 +742,7 @@ async function startBackgroundDownload(ytUrl: string): Promise<void> {
       args: [
         "-loglevel", "error",
         "-i", "pipe:0",
+        "-vn",
         "-f", "mp3",
         "-b:a", "192k",
         "-ar", "44100",
@@ -754,145 +842,144 @@ async function handleFileStream(req: Request, filePath: string): Promise<Respons
   });
 }
 
-async function handleLiveStream(req: Request, ytUrl: string): Promise<Response> {
-  if (playbackState.streamActive) {
-    return new Response("Stream already active", { status: 409 });
-  }
-
-  playbackState.streamActive = true;
-  if (!tuiEnabled) {
-    console.log("🎵 Sonos connected to stream, starting playback...");
-  }
-
+async function startEncoder(ytUrl: string): Promise<void> {
   const ytdlpPath = await findCommandPath("yt-dlp");
   const ffmpegPath = await findCommandPath("ffmpeg");
 
   const ytdlp = new Deno.Command(ytdlpPath, {
-    args: ["-f", "bestaudio/best", "-o", "-", ytUrl],
+    args: ytdlpStreamArgs(ytUrl),
     stdout: "piped",
-    stderr: "null",
+    stderr: "piped",
   }).spawn();
 
   const ffmpeg = new Deno.Command(ffmpegPath, {
     args: [
       "-loglevel", "error",
       "-i", "pipe:0",
+      "-vn",
       "-f", "mp3",
       "-b:a", "192k",
       "-ar", "44100",
       "-ac", "2",
       "-bufsize", "64k",
-      "pipe:1"
+      "pipe:1",
     ],
     stdin: "piped",
     stdout: "piped",
-    stderr: "null",
+    stderr: "piped",
   }).spawn();
 
   playbackState.activeProcesses = playbackState.activeProcesses || {};
   playbackState.activeProcesses.ytdlp = ytdlp;
   playbackState.activeProcesses.ffmpeg = ffmpeg;
+  playbackState.streamListeners = new Set();
+  playbackState.streamPreroll = [];
+  playbackState.streamActive = true;
 
+  let rejectReady: (e: Error) => void = () => {};
+  const failed = new Promise<void>((_, reject) => {
+    rejectReady = reject;
+  });
+  const onFatal = (msg: string) => rejectReady(new Error(msg));
+
+  logProcessStderr("YTDLP", ytdlp.stderr, onFatal);
+  logProcessStderr("FFMPEG", ffmpeg.stderr, onFatal);
   ytdlp.stdout!.pipeTo(ffmpeg.stdin!).catch(() => {});
 
-  let controllerClosed = false;
-  let cleanupDone = false;
-  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
-  
-  const cleanup = async () => {
-    if (!cleanupDone) {
-      cleanupDone = true;
+  let prerollBytes = 0;
+  let gotFirst = false;
+  let resolveReady: () => void = () => {};
+  const ready = new Promise<void>((resolve) => {
+    resolveReady = resolve;
+  });
+
+  const reader = ffmpeg.stdout!.getReader();
+  (async () => {
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        if (!gotFirst) {
+          gotFirst = true;
+          resolveReady();
+        }
+        if (prerollBytes < 64 * 1024) {
+          playbackState.streamPreroll?.push(value);
+          prerollBytes += value.byteLength;
+        }
+        for (const listener of playbackState.streamListeners ?? []) {
+          try {
+            listener(value);
+          } catch {
+            playbackState.streamListeners?.delete(listener);
+          }
+        }
+      }
+    } catch (e) {
+      await log(`STREAM: encoder read error - ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
       playbackState.streamActive = false;
-      
-      if (reader) {
-        try {
-          await reader.cancel();
-        } catch (err) {
-          console.error(`Failed to cancel reader: ${err}`);
-        }
-        try {
-          reader.releaseLock();
-        } catch (err) {
-            console.error(`Failed to release reader lock: ${err}`);
-        }
-        reader = null;
-      }
-
-      const killProcess = async (proc: Deno.ChildProcess | undefined) => {
-        if (!proc) return;
-        try {
-          proc.kill("SIGKILL");
-          await proc.status().catch(() => {});
-        } catch (err) {
-          console.error(`Failed to kill process: ${err}`);
-        }
-      };
-
-      await Promise.all([
-        killProcess(playbackState.activeProcesses?.ffmpeg),
-        killProcess(playbackState.activeProcesses?.ytdlp),
-      ]);
-
-      if (playbackState.activeProcesses) {
-        delete playbackState.activeProcesses.ffmpeg;
-        delete playbackState.activeProcesses.ytdlp;
-      }
     }
-  };
+  })();
 
+  let timer: number | undefined;
+  const timeout = new Promise<void>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("yt-dlp/ffmpeg produced no audio in 25s")), 25000);
+  });
+
+  try {
+    await Promise.race([ready, timeout, failed]);
+  } catch (e) {
+    await killChild(ffmpeg);
+    await killChild(ytdlp);
+    throw e;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+  await log("STREAM: encoder produced audio");
+}
+
+function handleLiveStream(_req: Request): Response {
+  let listener: ((chunk: Uint8Array) => void) | undefined;
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
-      reader = ffmpeg.stdout!.getReader();
-      (async () => {
-        try {
-          while (true) {
-            const { value, done } = await reader!.read();
-            if (done) break;
-            if (value && !controllerClosed) {
-              try {
-                controller.enqueue(value);
-              } catch (err) {
-                console.error(`Failed to enqueue value: ${err}`);
-                break;
-              }
-            }
-          }
-        } catch (e) {
-          console.error(`Stream error: ${e}`);
-          if (!tuiEnabled) {
-            console.error("Stream error:", e);
-          }
-        } finally {
-          await cleanup();
-          if (!controllerClosed) {
-            try {
-              controller.close();
-            } catch (err) {
-              console.error(`Failed to close controller: ${err}`);
-            }
-            controllerClosed = true;
+      const set = playbackState.streamListeners;
+      if (playbackState.streamPreroll) {
+        for (const chunk of playbackState.streamPreroll) {
+          try {
+            controller.enqueue(chunk);
+          } catch {
+            return;
           }
         }
-      })();
+      }
+      listener = (chunk) => {
+        try {
+          controller.enqueue(chunk);
+        } catch {
+          if (listener) set?.delete(listener);
+        }
+      };
+      set?.add(listener);
     },
     cancel() {
-      controllerClosed = true;
-      cleanup();
+      if (listener) playbackState.streamListeners?.delete(listener);
     },
   });
 
   return new Response(body, {
     headers: {
       "Content-Type": "audio/mpeg",
-      "Connection": "close",
       "Cache-Control": "no-store",
+      "icy-name": playbackState.currentMetadata?.title || "YouTube",
     },
   });
 }
 
 // ============= Streaming Server =============
 async function startStreamingServer(ytUrl: string, deviceIp: string): Promise<void> {
-  console.error(`Starting streaming server for ${ytUrl}`);
+  await log(`STREAM: Starting server for ${ytUrl}`);
   await stopCurrentStream();
 
   const localIp = getLocalIPv4();
@@ -908,53 +995,51 @@ async function startStreamingServer(ytUrl: string, deviceIp: string): Promise<vo
   playbackState.currentUrl = ytUrl;
   playbackState.isPlaying = true;
   playbackState.useFileStream = false;
-  playbackState.activeProcesses = {};
-
-  startBackgroundDownload(ytUrl);
 
   const server = Deno.serve(
-    { 
-      hostname: "0.0.0.0", 
-      port, 
+    {
+      hostname: "0.0.0.0",
+      port,
       signal: playbackState.serverController.signal,
-      onListen: () => {}
+      onListen: () => {},
     },
     async (req) => {
       const url = new URL(req.url);
+      await log(`STREAM: ${req.method} ${url.pathname} ua=${req.headers.get("user-agent") || "?"}`);
       if (url.pathname !== STREAM_PATH && url.pathname !== STREAM_FILE_PATH) {
         return new Response("Not found", { status: 404 });
       }
 
       const useFile = playbackState.useFileStream && playbackState.cachedFilePath;
-      
       if (useFile) {
         return await handleFileStream(req, playbackState.cachedFilePath!);
-      } else {
-        return await handleLiveStream(req, ytUrl);
       }
+      return handleLiveStream(req);
     },
   );
 
   playbackState.server = server;
 
-  await new Promise(resolve => setTimeout(resolve, 100));
+  addTUIMessage("⏳ Fetching YouTube audio...");
+  if (tuiEnabled) renderTUI();
+  await startEncoder(ytUrl);
 
-  const streamUrl = `http://${localIp}:${port}${STREAM_PATH}`;
-  const rinconUri = `x-rincon-mp3radio://${streamUrl}`;
+  const rinconUri = `x-rincon-mp3radio://${localIp}:${port}${STREAM_PATH}`;
 
   await log(`STREAM: Setting URI - rinconUri=${rinconUri}, deviceIp=${deviceIp}`);
   await setAVTransportURI(deviceIp, rinconUri);
   await log(`STREAM: URI set successfully`);
-  
-  await new Promise(resolve => setTimeout(resolve, 200));
-  
+
   await log(`STREAM: Sending play command to device`);
   await play(deviceIp);
   await log(`STREAM: Play command sent`);
 
+  const transport = await getTransportInfo(deviceIp).catch(() => null);
+  await log(`STREAM: transport state=${transport?.state || "unknown"}`);
+
   if (!tuiEnabled) {
     console.log(`✅ Playing on ${deviceIp}`);
-    console.log(`📻 Stream URL: ${streamUrl}`);
+    console.log(`📻 Stream URL: http://${localIp}:${port}${STREAM_PATH}`);
   }
 }
 
@@ -988,7 +1073,7 @@ async function startQueueStreamingServer(ytUrl: string): Promise<string> {
       const ffmpegPath = await findCommandPath("ffmpeg");
 
       const ytdlp = new Deno.Command(ytdlpPath, {
-        args: ["-f", "bestaudio/best", "-o", "-", ytUrl],
+        args: ytdlpStreamArgs(ytUrl),
         stdout: "piped",
         stderr: "null",
       }).spawn();
@@ -997,6 +1082,7 @@ async function startQueueStreamingServer(ytUrl: string): Promise<string> {
         args: [
           "-loglevel", "error",
           "-i", "pipe:0",
+          "-vn",
           "-f", "mp3",
           "-b:a", "192k",
           "-ar", "44100",
@@ -1028,13 +1114,7 @@ async function startQueueStreamingServer(ytUrl: string): Promise<string> {
         }
 
         const killProcess = async (proc: Deno.ChildProcess | undefined) => {
-          if (!proc) return;
-          try {
-            proc.kill("SIGKILL");
-            await proc.status().catch(() => {});
-          } catch {
-            console.error(`Failed to kill process: ${e}`);
-          }
+          await killChild(proc);
         };
 
         await Promise.all([
@@ -1098,21 +1178,15 @@ async function startQueueStreamingServer(ytUrl: string): Promise<string> {
 }
 
 async function stopCurrentStream(): Promise<void> {
-  if (playbackState.activeProcesses) {
-    const killProcess = async (proc: Deno.ChildProcess | undefined) => {
-      if (!proc) return;
-      try {
-        proc.kill("SIGKILL");
-        await proc.status().catch(() => {});
-      } catch {
-        console.error(`Failed to kill process: ${e}`);
-      }
-    };
+  stopPositionTracking();
+  playbackState.streamListeners = new Set();
+  playbackState.streamPreroll = [];
 
+  if (playbackState.activeProcesses) {
     await Promise.all([
-      killProcess(playbackState.activeProcesses.ffmpeg),
-      killProcess(playbackState.activeProcesses.ytdlp),
-      killProcess(playbackState.activeProcesses.downloader),
+      killChild(playbackState.activeProcesses.ffmpeg),
+      killChild(playbackState.activeProcesses.ytdlp),
+      killChild(playbackState.activeProcesses.downloader),
     ]);
     playbackState.activeProcesses = {};
   }
@@ -1124,9 +1198,9 @@ async function stopCurrentStream(): Promise<void> {
 
   if (playbackState.server) {
     try {
-      await playbackState.server;
+      await playbackState.server.shutdown();
     } catch {
-      console.error(`Failed to wait for server: ${e}`);
+      // already stopped
     }
     playbackState.server = undefined;
   }
@@ -1159,6 +1233,17 @@ async function cmdScan(args: string[]): Promise<void> {
 
   config.devices = devices;
   config.lastScan = new Date().toISOString();
+
+  if (config.defaultDevice && !devices.some((d) => d.ip === config.defaultDevice)) {
+    const prev = config.defaultDevice;
+    config.defaultDevice = devices.length === 1 ? devices[0].ip : undefined;
+    addTUIMessage(
+      config.defaultDevice
+        ? `⚠️  Default IP ${prev} is gone; now using ${config.defaultDevice}`
+        : `⚠️  Default IP ${prev} is gone; run 'set-default <n>'`,
+    );
+  }
+
   await saveConfig();
 
   addTUIMessage(`✅ Found ${devices.length} device(s)`);
@@ -1166,6 +1251,10 @@ async function cmdScan(args: string[]): Promise<void> {
     const isDefault = d.ip === config.defaultDevice ? " [DEFAULT]" : "";
     addTUIMessage(`${i + 1}. ${d.name}${isDefault} - ${d.room} (${d.ip})`);
   });
+
+  if (devices.every((d) => d.model === "Unknown")) {
+    addTUIMessage(`⚠️  ${unreachableHint()}`);
+  }
   
   if (tuiEnabled) renderTUI();
 }
@@ -1212,6 +1301,22 @@ async function cmdPlay(args: string[]): Promise<void> {
     addTUIMessage("❌ No device specified and no default set");
     addTUIMessage("Run 'scan' first, then 'set-default <number>' or specify device");
     return;
+  }
+
+  const reachable = await pickReachableIp(targetIp);
+  if (!reachable) {
+    await log(`PLAY: Device unreachable target=${targetIp}`);
+    addTUIMessage(`❌ ${unreachableHint(targetIp)}`);
+    return;
+  }
+  if (reachable.fallback) {
+    await log(`PLAY: Fallback ${targetIp} → ${reachable.ip}`);
+    addTUIMessage(`⚠️  ${targetIp} unreachable, using ${reachable.ip}`);
+    if (config.defaultDevice === targetIp) {
+      config.defaultDevice = reachable.ip;
+      await saveConfig();
+    }
+    targetIp = reachable.ip;
   }
 
   if (!await checkDependencies()) {
@@ -1328,6 +1433,20 @@ async function cmdNext(args: string[]): Promise<void> {
     return;
   }
 
+  const reachable = await pickReachableIp(targetIp);
+  if (!reachable) {
+    addTUIMessage(`❌ ${unreachableHint(targetIp)}`);
+    return;
+  }
+  if (reachable.fallback) {
+    addTUIMessage(`⚠️  ${targetIp} unreachable, using ${reachable.ip}`);
+    if (config.defaultDevice === targetIp) {
+      config.defaultDevice = reachable.ip;
+      await saveConfig();
+    }
+    targetIp = reachable.ip;
+  }
+
   if (!await checkDependencies()) {
     addTUIMessage("❌ Missing dependencies. Check installation.");
     return;
@@ -1427,19 +1546,9 @@ async function cmdPause(): Promise<void> {
 
     if (playbackState.activeProcesses) {
       await log(`PAUSE: Stopping live stream processes - hasFFmpeg=${!!playbackState.activeProcesses.ffmpeg}, hasYtdlp=${!!playbackState.activeProcesses.ytdlp}`);
-      const killProcess = async (proc: Deno.ChildProcess | undefined) => {
-        if (!proc) return;
-        try {
-          proc.kill("SIGKILL");
-          await proc.status().catch(() => {});
-        } catch {
-          console.error(`Failed to kill process: ${e}`);
-        }
-      };
-
       await Promise.all([
-        killProcess(playbackState.activeProcesses.ffmpeg),
-        killProcess(playbackState.activeProcesses.ytdlp),
+        killChild(playbackState.activeProcesses.ffmpeg),
+        killChild(playbackState.activeProcesses.ytdlp),
       ]);
 
       delete playbackState.activeProcesses.ffmpeg;
@@ -2565,7 +2674,7 @@ async function fetchVideoMetadata(url: string): Promise<VideoMetadata | null> {
   try {
     const ytdlpPath = await findCommandPath("yt-dlp");
     const cmd = new Deno.Command(ytdlpPath, {
-      args: ["--dump-json", "--no-playlist", url],
+      args: ["--dump-json", "--no-playlist", "--no-update", "--extractor-args", "youtube:player_client=android", url],
       stdout: "piped",
       stderr: "null",
     });

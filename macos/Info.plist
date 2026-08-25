@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.sonosyoutube.cli</string>
+	<key>CFBundleName</key>
+	<string>sonos-cli</string>
+	<key>CFBundleExecutable</key>
+	<string>sonos-cli</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleVersion</key>
+	<string>1.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>sonos-cli needs local network access to discover and control your Sonos speakers.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_sonos._tcp</string>
+	</array>
+</dict>
+</plist>
