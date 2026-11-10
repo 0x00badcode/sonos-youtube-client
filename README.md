@@ -1,22 +1,43 @@
-# Sonos YouTube Player CLI
+# SonosTube
 
-A command-line interface for playing YouTube videos on your Sonos speakers.
+A small native Mac app: search YouTube or paste a link, and it plays on your Sonos.
 
-## Mac app (SonosTube)
+- Search YouTube or paste/drop a link; the audio downloads once and plays on the speaker
+- Library of everything you've played; double-click to replay
+- Star tracks to keep them as favorites, and filter the list to favorites only
+- Play/pause, seek and volume, plus a speaker picker (speakers are found automatically)
+- Picks up whatever the speaker is doing when you relaunch
 
-A small native SwiftUI app: search YouTube or paste a link, and it plays on your Sonos.
+## Install
 
-Requires macOS 26, the Xcode Command Line Tools, and `brew install yt-dlp ffmpeg`.
+Download `SonosTube-1.0.zip` from the [latest release](https://github.com/0x00badcode/sonos-youtube-client/releases/latest), unzip it, and move the app to Applications.
+
+Requires macOS 26 on Apple silicon, and:
+
+```bash
+brew install yt-dlp ffmpeg
+```
+
+The app is not notarized: on first launch, right-click it and choose Open. Then allow Local Network access so it can find your speakers.
+
+Keep the app running while music plays; it serves the audio to the speaker. Closing the window is fine, quitting stops the music.
+
+## Build from source
+
+Needs the Xcode Command Line Tools (no Xcode).
 
 ```bash
 ./build.sh
 open build/SonosTube.app
 ```
 
-The first launch asks for Local Network access; allow it so the app can find your speakers.
 Self-check: `.build/release/SonosTube --self-test`
 
-The sections below describe the older terminal CLI.
+---
+
+# Terminal CLI (legacy)
+
+The original Deno CLI is still in the repo. Everything below describes it.
 
 ## Features
 
