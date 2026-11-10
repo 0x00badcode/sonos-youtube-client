@@ -2,6 +2,22 @@
 
 A command-line interface for playing YouTube videos on your Sonos speakers.
 
+## Mac app (SonosTube)
+
+A small native SwiftUI app: search YouTube or paste a link, and it plays on your Sonos.
+
+Requires macOS 26, the Xcode Command Line Tools, and `brew install yt-dlp ffmpeg`.
+
+```bash
+./build.sh
+open build/SonosTube.app
+```
+
+The first launch asks for Local Network access; allow it so the app can find your speakers.
+Self-check: `.build/release/SonosTube --self-test`
+
+The sections below describe the older terminal CLI.
+
 ## Features
 
 - 🎵 Play YouTube videos directly on Sonos devices
